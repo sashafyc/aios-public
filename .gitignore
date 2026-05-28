@@ -1,0 +1,30 @@
+# Секреты — НИКОГДА не коммитить
+.env
+bridge/.env
+*.env
+
+# Runtime-состояние
+.bridge.lock
+bridge/.bridge.lock
+bridge/.rate_limits.json
+bridge/queue/
+**/.state
+
+# Логи и рабочие файлы
+logs/
+workspace/temp/
+workspace/permanent/*
+!workspace/permanent/.gitkeep
+
+# Архивы контекста агентов
+agents/**/context_archive/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# OS
+.DS_Store
+Thumbs.db

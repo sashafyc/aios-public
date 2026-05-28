@@ -1,0 +1,53 @@
+{
+  "_comment": "Общий settings.json для всех агентов aios-public. Bypass permissions + deny list. install.sh заменяет __AIOS_ROOT__ на реальный путь установки.",
+  "cacheRetention": "long",
+  "permissions": {
+    "bypass": true,
+    "blockedCommands": [
+      "rm -rf /",
+      "rm -rf ~",
+      "rm -rf /home",
+      "rm -rf /root",
+      "rm -rf __AIOS_ROOT__",
+      "dd if=",
+      "mkfs",
+      "mkfs.ext4",
+      "mkfs.xfs",
+      "fdisk",
+      "parted",
+      "shred",
+      ":(){ :|:& };:",
+      "chmod -R 000",
+      "chown -R nobody",
+      "> /dev/sda",
+      "> /dev/nvme",
+      "curl * | sh",
+      "curl * | bash",
+      "wget * | sh",
+      "wget * | bash",
+      "shutdown",
+      "reboot",
+      "halt",
+      "systemctl disable ssh",
+      "systemctl stop ssh",
+      "ufw disable",
+      "iptables -F",
+      "passwd",
+      "userdel",
+      "groupdel"
+    ],
+    "blockedPaths": [
+      "/etc/shadow",
+      "/etc/passwd",
+      "/etc/sudoers",
+      "~/.ssh",
+      "~/.claude/credentials.json",
+      "__AIOS_ROOT__/bridge/.env"
+    ],
+    "requireApproval": [
+      "git push --force",
+      "systemctl stop",
+      "systemctl disable"
+    ]
+  }
+}

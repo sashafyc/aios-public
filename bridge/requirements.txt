@@ -1,0 +1,10 @@
+# aios-public — Python зависимости (Python 3.11+, нужен tomllib из stdlib)
+# Установка: pip install -r requirements.txt
+
+aiogram>=3.4,<4        # Telegram-бот: поллинг, отправка, inline-кнопки
+aiohttp>=3.9           # HTTP для doctor.py (getMe) и tg_bridge
+httpx>=0.27            # HTTP-клиент для deepseek_runner (streaming API)
+
+# pexpect — нужен только для экспериментального PTYRunner (long-running CLI, phase2).
+# На основном пути (subprocess-раннеры) не требуется.
+# pexpect>=4.9

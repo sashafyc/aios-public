@@ -1,0 +1,66 @@
+# agents.toml — конфигурация агентов aios-public.
+# Hot-reload: bridge следит за изменениями и перечитывает без рестарта (каждые 60с).
+#
+# Значения topic_id и group_chat_id заполняет install.sh из твоих ответов.
+# Один бот (BOT_TOKEN) обслуживает все топики — мост роутит по topic_id.
+# Хочешь отдельного бота с аватаркой — заведи второй токен и укажи свой bot_token_env.
+
+[global]
+# Корень установки. install.sh подставит реальный путь (~/aios-public или /home/aios/aios-public).
+# Если пусто — определяется автоматически (родитель папки bridge/).
+aios_root = ""
+# ID Telegram-группы. install.sh подставит из твоего ввода (отрицательное число -100...).
+# Дублируется в .env как AIOS_GROUP_CHAT_ID (имеет приоритет).
+group_chat_id = 0
+
+# ───────────── Ассистент ─────────────
+# Рабочая лошадка: задачи, файлы, вопросы, генерация контента. Навыки: pdf/xlsx/pptx.
+[agents.assistant]
+display_name = "Ассистент"
+topic_id = 0                      # install.sh подставит
+bot_token_env = "BOT_TOKEN"
+workdir = "agents/assistant"
+model = "claude-sonnet-4-6"
+runner_type = "claude"
+role = "Универсальный ассистент: выполняет задачи, работает с файлами, генерит контент, отвечает на вопросы."
+can_delegate_to = ["scriber"]
+stream = true
+timeout_s = 7200
+
+# ───────────── Сисадмин ─────────────
+# Единственный интерфейс управления системой: создаёт агентов, подключает API,
+# переключает runner'ы, мониторит здоровье. Всё через диалог в TG.
+[agents.sysadmin]
+display_name = "Сисадмин"
+topic_id = 0                      # install.sh подставит
+bot_token_env = "BOT_TOKEN"
+workdir = "agents/sysadmin"
+model = "claude-sonnet-4-6"
+runner_type = "claude"
+role = "Системный администратор: управляет всей системой через диалог — создаёт/удаляет агентов, переключает LLM, подключает API, мониторит здоровье, чинит проблемы."
+stream = true
+timeout_s = 7200
+
+# ───────────── Скрайбер ─────────────
+# Транскрибация: голосовые, аудио, видео, YouTube. Полная транскрипция или саммари.
+[agents.scriber]
+display_name = "Скрайбер"
+topic_id = 0                      # install.sh подставит
+bot_token_env = "BOT_TOKEN"
+workdir = "agents/scriber"
+model = "claude-sonnet-4-6"
+runner_type = "claude"
+role = "Транскрибатор: принимает голосовые, аудио/видео файлы и YouTube-ссылки → выдаёт текст или саммари."
+stream = true
+timeout_s = 7200
+
+# ───────────── Пример: агент добавленный через Сисадмина ─────────────
+# [agents.researcher]
+# display_name = "Ресёрчер"
+# topic_id = 0
+# bot_token_env = "BOT_TOKEN"
+# workdir = "agents/researcher"
+# model = "deepseek-v4-pro"
+# runner_type = "deepseek"
+# role = "Исследователь: сбор данных, анализ, подготовка справок."
+# stream = false
