@@ -227,7 +227,7 @@ class _QueuedInput:
 
 # Дебаунс между подряд идущими msg от одного агента — склейка split-промпта.
 INBOX_DEBOUNCE_S = float(os.getenv("INBOX_DEBOUNCE_S", "1.5"))
-# v9.9: дебаунс для пересланных сообщений (Саша пересылает 5 msg — ждём 1с после последнего)
+# v9.9: дебаунс для пересланных сообщений (пользователь пересылает 5 msg — ждём 1с после последнего)
 FORWARD_DEBOUNCE_S = float(os.getenv("FORWARD_DEBOUNCE_S", "1.0"))
 
 
@@ -264,7 +264,7 @@ class Bridge:
         )
 
         # Видимое сообщение от имени отправителя в топик получателя.
-        # Саша видит живой диалог агентов: кто кому что написал.
+        # Пользователь видит живой диалог агентов: кто кому что написал.
         from_cfg = agents_registry.get(from_agent)
         to_cfg = agents_registry.get(to_agent)
         task_label = f" [{task_id}]" if task_id else ""
@@ -1062,7 +1062,7 @@ class Bridge:
         Auto-пинг для WAITING агентов: попроси короткий статус-апдейт.
         Две цели:
           1) освежить prompt-кэш Anthropic (TTL 1h) — длинные WAITING не теряли контекст
-          2) Саша получает прогресс в свой топик раз в 30 мин
+          2) пользователь получает прогресс в свой топик раз в 30 мин
         """
         st = self.sessions.load(agent_name)
         waiting_info = ""
@@ -1636,7 +1636,7 @@ async def run_agent_poller(bridge: Bridge, cfg: agents_registry.AgentConfig) -> 
                 if caption_parts:
                     text_parts.append("\n".join(dict.fromkeys(caption_parts)))  # dedupe captions
                 if all_paths:
-                    text_parts.append("\n[Прикреплённые файлы (группа, прочитай их через Read tool):]")
+                    text_parts.append("\n[Прикреплённые файлы (группа). Текст/код/картинки — Read tool; pdf/xlsx/pptx — через навык или python:]")
                     for fp in all_paths:
                         text_parts.append(f"  - {fp}")
                 final_text = "\n".join(text_parts).strip()
@@ -1650,7 +1650,7 @@ async def run_agent_poller(bridge: Bridge, cfg: agents_registry.AgentConfig) -> 
         parts: list[str] = []
 
         # ─────── Reply context ───────
-        # Если Саша отвечает реплаем на конкретное сообщение —
+        # Если пользователь отвечает реплаем на конкретное сообщение —
         # подтягиваем текст этого сообщения как контекст для агента.
         if message.reply_to_message:
             reply_msg = message.reply_to_message
@@ -1664,7 +1664,7 @@ async def run_agent_poller(bridge: Bridge, cfg: agents_registry.AgentConfig) -> 
                 is_from_bot = reply_msg.from_user and (
                     bot_user_id and reply_msg.from_user.id == bot_user_id
                 )
-                sender = cfg.display_name if is_from_bot else "Саша"
+                sender = cfg.display_name if is_from_bot else "Пользователь"
                 # Detect old session: reply to a message sent before last session reset
                 session_hint = ""
                 try:
@@ -1746,7 +1746,7 @@ async def run_agent_poller(bridge: Bridge, cfg: agents_registry.AgentConfig) -> 
                 other_paths.append(fp)
 
         if other_paths:
-            parts.append("\n[Прикреплённые файлы (прочитай их через Read tool):]")
+            parts.append("\n[Прикреплённые файлы. Текст/код/картинки — Read tool; pdf/xlsx/pptx — через навык или python:]")
             for fp in other_paths:
                 parts.append(f"  - {fp}")
 
