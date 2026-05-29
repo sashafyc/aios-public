@@ -7,12 +7,15 @@
 | `BOT_TOKEN` | да | Токен Telegram-бота (@BotFather) |
 | `AIOS_GROUP_CHAT_ID` | да | ID группы (-100...). Приоритет над agents.toml |
 | `AIOS_ROOT` | да | Абсолютный путь установки |
+| `ALLOWED_USER_IDS` | опц. | Белый список user_id через запятую. Пусто = любой участник группы |
 | `DEEPSEEK_API_KEY` | для deepseek | Ключ DeepSeek API |
 | `OPENAI_API_KEY` | опц. | Для codex в API-режиме |
 | `ASSEMBLYAI_API_KEY` | опц. | Голосовые + Скрайбер |
 | `TIMEZONE_OFFSET_HOURS` | нет (=3) | Смещение от UTC |
 | `DAILY_RESET_HOUR` / `_MINUTE` | нет (6/30) | Время ежедневного сброса сессий |
 | `WATCHDOG_TOPIC_ID` | нет | Топик для алертов watchdog (обычно Сисадмин) |
+| `MAX_INCOMING_FILE_MB` | нет (=20) | Лимит размера входящего файла |
+| `MAX_FILES_PER_MESSAGE` | нет (=10) | Лимит файлов в одном сообщении |
 | `TG_API_BASE` | нет | Кастомный Telegram API (прокси) |
 
 ## bridge/agents.toml — агенты
