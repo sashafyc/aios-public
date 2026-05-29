@@ -458,7 +458,7 @@ step_generate() {
         echo "DAILY_RESET_MINUTE=30"
         echo "WATCHDOG_TOPIC_ID=\"$(_envq "$TOPIC_SYSADMIN")\""
         echo "AIOS_BUGREPORT=$BUGREPORT"
-        echo "AIOS_BUGREPORT_URL=\"$(_envq "${AIOS_BUGREPORT_URL:-}")\""
+        echo "AIOS_BUGREPORT_URL=\"$(_envq "${AIOS_BUGREPORT_URL:-https://bugs.a-invest.pro/bugreport}")\""
     } > "$bridge/.env"
     chmod 600 "$bridge/.env"
     ok ".env создан (chmod 600)"
