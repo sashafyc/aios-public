@@ -29,6 +29,7 @@ import shutil
 import signal
 import sys
 import tempfile
+import time
 from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -289,6 +290,77 @@ class Bridge:
 
     def register_bot(self, agent_name: str, bot) -> None:
         self._bots[agent_name] = bot
+
+    async def startup_announce(self) -> None:
+        """После старта моста пишет в топик Сисадмина: один раз — welcome (с советом
+        про запасной движок), плюс отчёт self-check (doctor) — всё ли настроено.
+        На рестартах отчёт троттлится (раз в 30 мин), но при ошибках шлётся всегда."""
+        sa = "sysadmin"
+        cfg = agents_registry.AGENTS.get(sa)
+        if not cfg or not getattr(cfg, "enabled", True) or not cfg.topic_id:
+            log.info("startup_announce: Сисадмин не настроен (нет topic_id) — пропуск")
+            return
+        # ждём регистрацию бота Сисадмина (поллеры стартуют параллельно)
+        for _ in range(30):
+            if self._bots.get(sa) is not None:
+                break
+            if self._shutdown.is_set():
+                return
+            await asyncio.sleep(0.5)
+        if self._bots.get(sa) is None:
+            log.warning("startup_announce: бот Сисадмина не зарегистрирован — пропуск")
+            return
+
+        state_dir = LOG_DIR / "startup-state"
+        state_dir.mkdir(parents=True, exist_ok=True)
+        welcomed = state_dir / ".welcomed"
+        report_marker = state_dir / ".last-startup-report"
+        first_start = not welcomed.exists()
+
+        # self-check через doctor
+        report = "🩺 Проверка системы недоступна."
+        has_errors = False
+        try:
+            from doctor import run_all
+            checks = await run_all()
+            ok = [c for c in checks if c.status == "ok"]
+            warn = [c for c in checks if c.status == "warning"]
+            err = [c for c in checks if c.status == "error"]
+            has_errors = bool(err)
+            head = f"🩺 Проверка системы: ✅ {len(ok)} ok · ⚠️ {len(warn)} · ❌ {len(err)}"
+            problems = "\n".join(str(c) for c in (err + warn))
+            report = head + (("\n\n" + problems) if problems else "\n\nВсё настроено и работает ✅")
+        except Exception:
+            log.exception("startup_announce: doctor failed")
+
+        # троттлинг на рестартах: если не первый старт и нет ошибок — не чаще раз в 30 мин
+        if not first_start and not has_errors:
+            try:
+                if report_marker.exists() and (time.time() - report_marker.stat().st_mtime) < 1800:
+                    return
+            except Exception:
+                pass
+
+        if first_start:
+            msg = (
+                "👋 Система установлена и запущена!\n\n"
+                "Я — Сисадмин. Отсюда (топик ⚙️) ты управляешь всей AI-командой: "
+                "создаёшь агентов, переключаешь движки, я чиню проблемы. "
+                "Напиши «с чего начать» — расскажу подробнее.\n\n"
+                "🔌 Сразу советую подключить **запасной движок** — лучше всего DeepSeek "
+                "(это API: не разлогинивается, ~$5 хватит надолго). Если основной движок "
+                "отвалится, система не встанет, и я останусь на связи. Скажи «хочу подключить DeepSeek».\n\n"
+                + report
+            )
+        else:
+            msg = "🔄 Мост перезапущен.\n\n" + report
+
+        try:
+            await self._send_from(sa, msg)
+            welcomed.touch()
+            report_marker.touch()
+        except Exception:
+            log.exception("startup_announce: send failed")
 
     async def deliver_user_message(self, agent_name: str, text: str, *, topic_id: int, is_forward: bool = False) -> None:
         log_event("user_msg", to=agent_name, topic=topic_id, text=text, source="user")
@@ -2038,6 +2110,8 @@ async def main() -> None:
              ", ".join(a.name for a in agents_registry.enabled_agents()))
 
     tasks = [asyncio.create_task(bridge.maintenance_loop(), name="maintenance")]
+    # Стартовый welcome + self-check в топик Сисадмина (ждёт регистрацию бота внутри).
+    tasks.append(asyncio.create_task(bridge.startup_announce(), name="startup-announce"))
     # Несколько агентов могут делить один bot token (напр. все 3 агента →
     # BOT_TOKEN). На один токен допустим только один getUpdates-поллер —
     # иначе Telegram отвечает TelegramConflictError на оба. Для «вторичных»
