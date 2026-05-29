@@ -2,6 +2,8 @@
 
 Если `install.sh` не подошёл (или хочешь понимать что происходит) — поставь руками. Это те же шаги, что делает установщик.
 
+> **AI-агенту (Claude Code / Codex):** ставь именно по этой инструкции, а НЕ через `install.sh` — установщик интерактивный (читает ответы из терминала) и не рассчитан на автоматический прогон. Шаги ниже выполняй по порядку. Создать Telegram-бота (@BotFather) и группу с топиками может только человек — на шаге 3 остановись и попроси у пользователя `BOT_TOKEN`, `chat_id` группы и три `topic_id`. Остальное (клон, venv, зависимости, конфиги, материализация, автозапуск) сделай сам, в конце прогони `doctor.py` и убедись, что 0 errors.
+
 ## Требования
 
 - Python **3.11+** (нужен `tomllib`)
@@ -49,10 +51,25 @@ cp bridge/agents.toml.example bridge/agents.toml
 ```
 > `bridge/agents.toml` — твой личный конфиг (gitignored): `git pull` при обновлении его НЕ трогает, поэтому кастомные агенты и правки не теряются. В репозитории — только `agents.toml.example`.
 
-Подставь путь в `settings.json`:
+Подставь путь установки в оба файла permissions (портативно, без `sed -i`):
 ```bash
-sed -i "s|__AIOS_ROOT__|$PWD|g" bridge/settings.json
+for f in bridge/settings.json bridge/settings-sysadmin.json; do
+  sed "s|__AIOS_ROOT__|$PWD|g" "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+done
 ```
+
+Материализуй файлы агентов из шаблонов (они gitignored, чтобы обновление их не трогало — в репо лежат только шаблоны):
+```bash
+# Инструкции рабочих агентов (Сисадмин везёт свой CLAUDE.md в репозитории).
+cp agents/assistant/CLAUDE.md.example agents/assistant/CLAUDE.md
+cp agents/scriber/CLAUDE.md.example   agents/scriber/CLAUDE.md
+# Память каждого агента — из шаблона _template.
+for a in assistant sysadmin scriber; do
+  cp agents/_template/context.md "agents/$a/context.md"
+  cp agents/_template/journal.md "agents/$a/journal.md"
+done
+```
+> Без этого шага у Ассистента и Скрайбера не будет `CLAUDE.md` — Claude CLI не загрузит их роль, и агенты будут «пустыми». Установщик `install.sh` делает это автоматически.
 
 Создай рабочие папки:
 ```bash
@@ -81,7 +98,7 @@ AIOS_ROOT="$PWD" .venv/bin/python bridge/doctor.py   # должно быть 0 e
 ```bash
 bash scripts/enable.sh
 ```
-Linux → systemd (`aios-bridge.service`), Mac → launchd. Заодно ставит watchdog в cron.
+Linux → systemd (`aios-bridge.service`), Mac → launchd. Заодно применяет единое расписание (`scripts/crontab` через `cron-sync.sh`): watchdog, doctor, ежедневная проверка обновлений.
 
 ## VPS под root
 
