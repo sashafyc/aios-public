@@ -58,7 +58,7 @@ confirm() {  # confirm "Вопрос?" → 0 если да; при --yes все�
 }
 
 # ───────── Telegram-уведомление (как у watchdog) ─────────
-# Нужно чтобы недельный `--check` из cron САМ сообщал в группу о новой версии,
+# Нужно чтобы ежедневный `--check` из cron САМ сообщал в группу о новой версии,
 # а не молча писал в лог. Берём токен/чат из .env; топик — UPDATE_TOPIC_ID или
 # (fallback) WATCHDOG_TOPIC_ID (топик Сисадмина).
 ENV_FILE="$BRIDGE/.env"
@@ -125,7 +125,7 @@ show_changelog
 # --check: только сообщить, ничего не делать. Обнова есть → exit 0.
 if [[ "$CHECK_ONLY" == "1" ]]; then
     ok "Доступно обновление $REMOTE_VER. Для установки: bash scripts/update.sh --yes"
-    # Уведомить в Telegram ОДИН раз на версию (чтобы недельный cron не спамил).
+    # Уведомить в Telegram ОДИН раз на версию (чтобы ежедневный cron не спамил).
     mkdir -p "$NOTIFY_STATE_DIR"
     marker="$NOTIFY_STATE_DIR/notified-$REMOTE_VER"
     if [[ ! -f "$marker" ]]; then

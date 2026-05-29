@@ -13,7 +13,7 @@
 | каждые 5 мин | watchdog — жив ли мост, не зависла ли очередь, есть ли место на диске |
 | каждые 2 часа | doctor health-check → `logs/bridge/doctor.log` |
 | ежедневно 04:30 | чистка `workspace/temp/` старше 14 дней |
-| пн 09:00 | проверка обновлений (`update.sh --check`) → `logs/bridge/update-check.log` |
+| ежедневно 09:00 | проверка обновлений (`update.sh --check`) → `logs/bridge/update-check.log` |
 | (по желанию) | задачи агентов — cron-сессии через `trigger.py --isolated` |
 
 ## Применить изменения

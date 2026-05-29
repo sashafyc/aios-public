@@ -29,9 +29,9 @@
 # Чистка временных файлов агентов старше 14 дней — ежедневно в 04:30
 30 4 * * *    AIOS_ROOT=__AIOS_ROOT__ __AIOS_ROOT__/.venv/bin/python __AIOS_ROOT__/scripts/maintenance/cleanup_temp.py
 
-# Проверка обновлений проекта (только проверка, не установка) — по понедельникам в 09:00
+# Проверка обновлений проекта (только проверка, не установка) — ежедневно в 09:00
 # При наличии обновы Сисадмин сообщит и спросит подтверждение (см. knowledge/system/update.md).
-0 9 * * 1     AIOS_ROOT=__AIOS_ROOT__ bash __AIOS_ROOT__/scripts/update.sh --check >> __AIOS_ROOT__/logs/bridge/update-check.log 2>&1
+0 9 * * *     AIOS_ROOT=__AIOS_ROOT__ bash __AIOS_ROOT__/scripts/update.sh --check >> __AIOS_ROOT__/logs/bridge/update-check.log 2>&1
 
 
 # ─────────────────────── Задачи агентов (cron-сессии) ───────────────────────
