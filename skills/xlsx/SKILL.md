@@ -7,10 +7,10 @@ description: Создание, чтение и редактирование Exce
 
 Создавай и редактируй `.xlsx` через **openpyxl** (Python). Результат отправляй пользователю тегом `[FILE:/path]`.
 
-## Установка (если нет)
-```bash
-pip install openpyxl
-```
+## Python и библиотеки
+
+Запускай скрипты через **`$AIOS_ROOT/.venv/bin/python`** — там предустановлены `openpyxl` и `pandas`.
+Если библиотеки вдруг нет: `$AIOS_ROOT/.venv/bin/pip install openpyxl`.
 
 ## Создание таблицы
 ```python

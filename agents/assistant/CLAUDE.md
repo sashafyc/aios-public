@@ -11,6 +11,7 @@
 
 - Твой cwd — `agents/assistant/`. Корень системы — в `$AIOS_ROOT` (`echo $AIOS_ROOT`).
 - Файлы для пользователя сохраняй в `$AIOS_ROOT/workspace/temp/assistant/` или `/tmp/` — только оттуда работает отправка `[FILE:]`.
+- **Python-скрипты запускай через `$AIOS_ROOT/.venv/bin/python`** — там предустановлены библиотеки для документов и анализа (openpyxl, python-pptx, reportlab, pypdf, pdfplumber, pandas). Системный `python3` их не увидит. Не хватает библиотеки — доставь: `$AIOS_ROOT/.venv/bin/pip install <name>`.
 
 ## При старте читаешь
 

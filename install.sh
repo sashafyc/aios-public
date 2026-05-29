@@ -166,11 +166,17 @@ fetch_code() {
 setup_venv() {
     b " Ставлю Python-зависимости"; hr
     "$PYTHON" -m venv "$INSTALL_DIR/.venv"
-    "$INSTALL_DIR/.venv/bin/pip" install -q --upgrade pip
-    "$INSTALL_DIR/.venv/bin/pip" install -q -r "$INSTALL_DIR/bridge/requirements.txt"
+    local pip="$INSTALL_DIR/.venv/bin/pip"
+    "$pip" install -q --upgrade pip
+    "$pip" install -q -r "$INSTALL_DIR/bridge/requirements.txt"
+    ok "Зависимости моста установлены (aiogram, aiohttp, httpx)"
+    # Библиотеки навыков Ассистента (документы + анализ)
+    "$pip" install -q -r "$INSTALL_DIR/bridge/requirements-skills.txt" 2>/dev/null \
+        && ok "Библиотеки навыков установлены (openpyxl, python-pptx, reportlab, pypdf, pdfplumber, pandas)" \
+        || warn "Часть библиотек навыков не встала — Ассистент доставит при необходимости"
     # yt-dlp в тот же venv (для Скрайбера)
-    "$INSTALL_DIR/.venv/bin/pip" install -q yt-dlp 2>/dev/null || warn "yt-dlp не установлен (YouTube в Скрайбере не будет)"
-    ok "Зависимости установлены (aiogram, aiohttp, httpx, yt-dlp)"
+    "$pip" install -q yt-dlp 2>/dev/null && ok "yt-dlp установлен (YouTube в Скрайбере)" \
+        || warn "yt-dlp не установлен (YouTube в Скрайбере не будет)"
 }
 
 # ───────── Шаг 1: Telegram-группа ─────────

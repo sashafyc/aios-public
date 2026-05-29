@@ -5,6 +5,13 @@ description: "Работа с PDF файлами: чтение, извлечен
 
 # PDF Processing Guide
 
+## Python environment
+
+Запускай скрипты через **`$AIOS_ROOT/.venv/bin/python`** — там предустановлены `pypdf`, `reportlab`, `pdfplumber`.
+Для HTML→PDF (`weasyprint`) или OCR (`pytesseract`) — это тяжёлые зависимости, ставь по необходимости:
+`$AIOS_ROOT/.venv/bin/pip install weasyprint` (нужны системные cairo/pango).
+Готовый PDF отправляй пользователю тегом `[FILE:/path]`.
+
 ## Overview
 
 This guide covers essential PDF processing operations using Python libraries and command-line tools. For advanced features, JavaScript libraries, and detailed examples, see REFERENCE.md. If you need to fill out a PDF form, read FORMS.md and follow its instructions.

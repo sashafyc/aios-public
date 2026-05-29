@@ -1,0 +1,10 @@
+# Библиотеки для навыков Ассистента (документы + анализ данных).
+# install.sh ставит их в .venv вместе с requirements.txt.
+# Используются скриптами через $AIOS_ROOT/.venv/bin/python.
+
+openpyxl>=3.1        # /xlsx — таблицы Excel
+python-pptx>=0.6     # /pptx — презентации
+reportlab>=4.0       # /pdf  — создание PDF
+pypdf>=4.0           # /pdf  — чтение/слияние/разбивка PDF
+pdfplumber>=0.11     # /pdf  — извлечение текста и таблиц из PDF
+pandas>=2.0          # анализ данных, CSV, табличные операции

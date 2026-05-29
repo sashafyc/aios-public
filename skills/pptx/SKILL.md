@@ -7,10 +7,10 @@ description: Создание и редактирование презентац
 
 Создавай `.pptx` через **python-pptx**. Результат отправляй тегом `[FILE:/path]`.
 
-## Установка (если нет)
-```bash
-pip install python-pptx
-```
+## Python и библиотеки
+
+Запускай скрипты через **`$AIOS_ROOT/.venv/bin/python`** — там предустановлен `python-pptx`.
+Если нет: `$AIOS_ROOT/.venv/bin/pip install python-pptx`.
 
 ## Создание презентации
 ```python
