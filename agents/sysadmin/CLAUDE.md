@@ -40,11 +40,12 @@
 | «Создай агента X» | Навык `/create-agent`: собираешь роль → создаёшь папку, CLAUDE.md, симлинки → просишь создать топик → добавляешь в `$AIOS_ROOT/bridge/agents.toml` |
 | «Удали агента X» | Убираешь секцию из `$AIOS_ROOT/bridge/agents.toml`, архивируешь папку в `$AIOS_ROOT/agents/_archive/` |
 | «Измени роль X» | Редактируешь `$AIOS_ROOT/agents/X/CLAUDE.md` |
-| «Переключи X на DeepSeek/Codex/Gemini» | Меняешь `runner_type` и `model` в `$AIOS_ROOT/bridge/agents.toml` (hot-reload подхватит, рестарт не нужен) |
+| «Переключи X на DeepSeek/Codex/Gemini/Claude» | СНАЧАЛА проверь, что движок подключён (см. «Переключение движка» ниже). Подключён → уточни версию модели → меняешь `runner_type` и `model` у нужного агента в `$AIOS_ROOT/bridge/agents.toml` (hot-reload, рестарт не нужен). НЕ подключён → попроси сначала подключить. |
+| «Какие движки подключены?» | `doctor.py` → строки `runner:claude/codex/gemini/deepseek` (CLI установлен / API-ключ задан / не подключён) |
 | «Подключи голосовые» | Просишь ключ AssemblyAI → дописываешь `ASSEMBLYAI_API_KEY=...` в `$AIOS_ROOT/bridge/.env` → рестарт моста |
 | «Подключи ChatGPT/DeepSeek/Gemini» | CLI (claude/codex/gemini) — даёшь инструкцию авторизации (см. ниже). API (deepseek/openai) — просишь ключ → в `$AIOS_ROOT/bridge/.env` → рестарт |
 | «Покажи статус / проверь систему» | `$AIOS_ROOT/.venv/bin/python $AIOS_ROOT/bridge/doctor.py`, показываешь результат |
-| «Какие у меня агенты?» | Читаешь `$AIOS_ROOT/bridge/agents.toml` → список с runner'ами |
+| «Какие у меня агенты?» | Читаешь `$AIOS_ROOT/bridge/agents.toml` → список: имя + движок (`runner_type`) + версия модели (`model`) для каждого |
 | «Настрой делегацию X→Y» | Обновляешь `can_delegate_to` у X в `$AIOS_ROOT/bridge/agents.toml` |
 | «Сбрось сессию X» | Подскажи пользователю отправить `/new` в топике X (это надёжнее правки .state) |
 | «Рестартни мост» | См. раздел «Рестарт моста» ниже |
@@ -58,8 +59,39 @@
 
 ## Подключение runner'ов (детали)
 
-- **Claude / Codex / Gemini** (через CLI) — ключ в .env НЕ нужен. Дай пользователю команду авторизации: `claude auth` (или `codex auth` / `gemini auth`). На сервере под пользователем `aios`: `su - aios -c "claude auth"`. После — переключай агента в agents.toml.
-- **DeepSeek / OpenAI** (через API) — попроси ключ, допиши в .env (`DEEPSEEK_API_KEY=...`), рестартни мост.
+Каждый агент работает на своём раннере (`runner_type`) и версии модели (`model`) —
+это per-agent в `agents.toml`. Раннеров четыре: **claude** (Anthropic), **codex**
+(OpenAI/GPT), **gemini** (Google), **deepseek**. У каждого свои версии модели — в поле
+`model` пишется то, что понимает соответствующий CLI/API (например claude: opus/sonnet
+разных версий; codex: gpt-5.x / mini; gemini: pro/flash; deepseek: свои). Значения в
+конфиге из коробки — плейсхолдеры, замени на актуальные для своего CLI.
+
+**Как подключается движок:**
+- **Claude / Codex / Gemini** (через CLI) — ключ в .env НЕ нужен. Авторизация командой:
+  `claude auth` (или `codex auth` / `gemini auth`). На сервере под `aios`: `su - aios -c "claude auth"`.
+- **DeepSeek** (через API) — попроси ключ, допиши в .env (`DEEPSEEK_API_KEY=...`), рестартни мост.
+
+**Что уже подключено** — смотри `doctor.py`, строки `runner:*`: CLI установлен / API-ключ
+задан / не подключён.
+
+## Переключение движка агента (флоу)
+
+Когда пользователь просит «переведи агента X на Y» / «хочу подключить Z»:
+
+1. **Проверь подключение** целевого движка (`doctor.py` → `runner:Y`, или для CLI —
+   установлен ли бинарь и сделана ли авторизация; для deepseek — есть ли ключ в .env).
+2. **Не подключён** → честно скажи и помоги подключить:
+   > Чтобы перевести на Gemini, его сначала надо подключить: выполни `gemini auth`
+   > (или дай мне API-ключ для DeepSeek). После этого переключу.
+   Не переключай агента на неподключённый движок «в воздух».
+3. **Подключён** → уточни версию модели:
+   > Готово, Gemini подключён. На какую версию переключить агента X — быструю (flash)
+   > или умную (pro)?
+4. Поставь `runner_type` и `model` ИМЕННО этому агенту в `agents.toml` (hot-reload за ~60с).
+   Другие агенты не трогай. Подтверди: «Готово, X теперь на Y (модель Z)».
+
+> Примечание: богатый авто-fallback (claude↔codex→o4-mini при rate-limit) рассчитан на
+> claude/codex. Агент на gemini/deepseek при лимите просто ждёт (без кросс-fallback).
 
 ## Рестарт моста
 

@@ -202,6 +202,33 @@ async def check_agents() -> list[Check]:
     return checks
 
 
+def check_runner_backends() -> list[Check]:
+    """Доступность LLM-бэкендов: CLI-движки (claude/codex/gemini) + API (deepseek).
+    Помогает Сисадмину видеть, что подключено, ПЕРЕД переключением агента на движок.
+    Наличие CLI = бинарь в PATH; авторизация проверяется отдельно (`<cli> auth`)."""
+    used = {cfg.runner_type for cfg in agents_registry.enabled_agents()}
+    out: list[Check] = []
+    for rt, binary in (("claude", "claude"), ("codex", "codex"), ("gemini", "gemini")):
+        present = shutil.which(binary) is not None
+        in_use = rt in used
+        tag = " (используется агентами)" if in_use else ""
+        if present:
+            out.append(Check(f"runner:{rt}", "ok", f"CLI установлен{tag}; авторизация: {binary} auth"))
+        elif in_use:
+            out.append(Check(f"runner:{rt}", "error",
+                             f"CLI '{binary}' НЕ найден, но агент его использует — установи и авторизуй ({binary} auth)"))
+        else:
+            out.append(Check(f"runner:{rt}", "warning", f"CLI '{binary}' не установлен (не используется)"))
+    ds_key = bool(os.environ.get("DEEPSEEK_API_KEY", ""))
+    if ds_key:
+        out.append(Check("runner:deepseek", "ok", "API-ключ задан" + (" (используется)" if "deepseek" in used else "")))
+    elif "deepseek" in used:
+        out.append(Check("runner:deepseek", "error", "DEEPSEEK_API_KEY не задан, а агент использует deepseek"))
+    else:
+        out.append(Check("runner:deepseek", "warning", "DEEPSEEK_API_KEY не задан (не используется)"))
+    return out
+
+
 async def run_all() -> list[Check]:
     checks: list[Check] = []
 
@@ -217,8 +244,9 @@ async def run_all() -> list[Check]:
 
     # Опциональные API keys (отсутствие = фича выключена, не ошибка)
     checks.append(check_optional_env_var("ASSEMBLYAI_API_KEY", "голосовые/транскрибация"))
-    checks.append(check_optional_env_var("DEEPSEEK_API_KEY", "runner deepseek"))
-    checks.append(check_optional_env_var("OPENAI_API_KEY", "runner codex (API-режим)"))
+
+    # Доступность LLM-бэкендов (что подключено для переключения агентов)
+    checks.extend(check_runner_backends())
 
     # Bot tokens (deduplicated)
     seen_tokens = set()
