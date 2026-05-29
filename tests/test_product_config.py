@@ -79,3 +79,29 @@ def test_default_settings_blocks_env():
     base = json.loads((bridge / "settings.json").read_text())
     blocked = base["permissions"]["blockedPaths"]
     assert any(".env" in p for p in blocked), "Обычные агенты НЕ должны читать .env"
+
+
+# ───────── база знаний, онбординг, протоколы ─────────
+
+def test_shared_protocols_exist():
+    shared = Path(__file__).resolve().parents[1] / "agents" / "_shared"
+    for f in ("tags.md", "tg-format.md", "context-spec.md", "hierarchy.md",
+              "knowledge-base.md", "escalation.md"):
+        assert (shared / f).exists(), f"нет общего протокола {f}"
+
+
+def test_onboarding_files_exist():
+    agents = Path(__file__).resolve().parents[1] / "agents"
+    assert (agents / "assistant" / "onboarding.md").exists()
+    assert (agents / "sysadmin" / "onboarding.md").exists()
+
+
+def test_knowledge_raw_exists():
+    kn = Path(__file__).resolve().parents[1] / "knowledge"
+    assert (kn / "raw").is_dir(), "нет корзины сырья knowledge/raw/"
+
+
+def test_template_reads_knowledge_base():
+    tmpl = (Path(__file__).resolve().parents[1] / "agents" / "_template" / "CLAUDE.md").read_text()
+    assert "knowledge-base.md" in tmpl, "шаблон агента должен подключать базу знаний"
+    assert "базе знаний" in tmpl, "шаблон должен велеть искать в базе знаний"

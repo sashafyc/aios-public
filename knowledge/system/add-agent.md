@@ -2,10 +2,12 @@
 
 Это делает Сисадмин через навык `create-agent` (skills/create-agent/SKILL.md). Здесь — справка по механике.
 
+> Новый агент по шаблону автоматически получает: чтение общих протоколов (`_shared/`), правило «сначала ищи в базе знаний», эскалацию ошибок к Сисадмину. Не убирай эти секции.
+
 ## Минимальные шаги
 
 1. **Папка** `agents/<name>/` (латиница, lowercase: researcher, cook, marketer).
-2. **CLAUDE.md** — роль агента (за основу `agents/_template/CLAUDE.md`).
+2. **CLAUDE.md** — роль агента (за основу `agents/_template/CLAUDE.md` — там уже зашиты база знаний и эскалация).
 3. **context.md + journal.md** — из `agents/_template/`.
 4. **Симлинки:**
    ```bash

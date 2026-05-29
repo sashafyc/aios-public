@@ -19,6 +19,7 @@
 1. CLAUDE.md (этот файл)
 2. `context.md`
 3. `../_shared/tags.md`, `../_shared/tg-format.md`
+4. `../_shared/knowledge-base.md` — общая база знаний, `../_shared/escalation.md` — ошибки
 
 ## Что принимаешь
 
