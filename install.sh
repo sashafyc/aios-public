@@ -300,6 +300,45 @@ step_voice() {
     fi
 }
 
+# ───────── Шаг 4.5: автономность Сисадмина (системные пакеты) ─────────
+ALLOW_PKG="no"
+step_pkg_perm() {
+    # На Mac brew работает без root — вопрос не нужен.
+    [[ "$OS" == "mac" ]] && return 0
+    b " Шаг 4.5: Автономность Сисадмина (опционально)"; hr
+    cat > /dev/tty <<'EOF'
+    Иногда агентам нужен системный пакет (ffmpeg, OCR, конвертеры).
+    Их установка требует прав root.
+
+    • Разрешить — Сисадмин ставит такие пакеты сам (apt-get install),
+      и тебе не нужно лезть на сервер. Удобно.
+    • Не разрешать — безопаснее: при необходимости Сисадмин даст тебе
+      команду, выполнишь сам. (Python-библиотеки он ставит сам в любом случае.)
+EOF
+    if confirm " Разрешить Сисадмину ставить системные пакеты сам?"; then
+        ALLOW_PKG="yes"; ok "Разрешено — настрою права при запуске"
+    else
+        ALLOW_PKG="no"; ok "Безопасный режим — без root у агента"
+    fi
+}
+
+_write_pkg_sudoers() {
+    [[ "$ALLOW_PKG" == "yes" && "$OS" != "mac" ]] || return 0
+    local sudo=""; [[ "$(id -u)" != "0" ]] && sudo="sudo"
+    local pm_path rule
+    if   command -v apt-get >/dev/null 2>&1; then pm_path="$(command -v apt-get)"; rule="$pm_path update, $pm_path install -y *, $pm_path install *"
+    elif command -v dnf     >/dev/null 2>&1; then pm_path="$(command -v dnf)";     rule="$pm_path install -y *, $pm_path install *"
+    else return 0; fi
+    local sudoers=/etc/sudoers.d/aios-pkg
+    echo "$RUN_USER ALL=(root) NOPASSWD: $rule" | $sudo tee "$sudoers" >/dev/null 2>&1 || return 0
+    $sudo chmod 440 "$sudoers" 2>/dev/null
+    if $sudo visudo -cf "$sudoers" >/dev/null 2>&1; then
+        ok "Сисадмину разрешена установка системных пакетов (sudo apt/dnf install)"
+    else
+        $sudo rm -f "$sudoers"; warn "sudoers для пакетов не прошёл валидацию — пропущено"
+    fi
+}
+
 # ───────── Шаг 5: генерация конфигов + запуск ─────────
 step_generate() {
     b " Шаг 5: Генерирую конфиги"; hr
@@ -354,6 +393,9 @@ EOF
         chown -R "$RUN_USER:$RUN_USER" "$INSTALL_DIR"
         ok "Права переданы пользователю $RUN_USER"
     fi
+
+    # опциональное право Сисадмину ставить системные пакеты
+    _write_pkg_sudoers
 }
 
 _gen_agents_toml() {  # _gen_agents_toml <path>
@@ -441,6 +483,7 @@ main() {
     step_bot
     step_llm
     step_voice
+    step_pkg_perm
     step_generate
     step_launch
 }
