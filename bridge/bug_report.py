@@ -1,10 +1,10 @@
 """
-bug_report.py — сбор баг-репортов. Local-first, отправка опциональна (opt-in).
+bug_report.py — сбор баг-репортов. Local-first, отправка по умолчанию ВКЛ (анонимно).
 
 Приватность (важно):
   • Локальная запись — всегда (logs/bugs/bugs.jsonl), у пользователя своя история.
-  • Отправка на сервер — ТОЛЬКО если в .env заданы AIOS_BUGREPORT=1 и
-    AIOS_BUGREPORT_URL. По умолчанию ВЫКЛ — ничего никуда не уходит.
+  • Отправка на сервер включена по умолчанию (AIOS_BUGREPORT=1) при заданном
+    AIOS_BUGREPORT_URL. Выключается AIOS_BUGREPORT=0. Спрашивается при установке.
   • Редакция: пути (/home/<user>, /Users/<user>, $HOME) → ~, секреты маскируются
     (redact.redact_secrets), длина ограничена. НЕ собираем: содержимое файлов,
     переписку, имя пользователя, ключи.
@@ -138,7 +138,7 @@ def _mark_sent(sig: str) -> None:
 def send(report: dict) -> bool:
     """Отправить отчёт на сервер, ЕСЛИ включено в .env. Иначе — no-op (False).
     Авто-ошибки (source=error) дедупим по сигнатуре; репорты пользователя шлём всегда."""
-    if os.getenv("AIOS_BUGREPORT", "0") != "1":
+    if os.getenv("AIOS_BUGREPORT", "1") != "1":
         return False
     url = os.getenv("AIOS_BUGREPORT_URL", "").strip()
     if not url:
@@ -187,7 +187,7 @@ def main() -> int:
     args = ap.parse_args()
     rep = capture(source=args.source, description=args.desc, error=args.error or None,
                   agent=args.agent or None, runner=args.runner or None, error_kind=args.kind or None)
-    sent = os.getenv("AIOS_BUGREPORT", "0") == "1" and bool(os.getenv("AIOS_BUGREPORT_URL", "").strip())
+    sent = os.getenv("AIOS_BUGREPORT", "1") == "1" and bool(os.getenv("AIOS_BUGREPORT_URL", "").strip())
     print(f"Баг записан локально ({BUGS_LOG}).", "Отправлен на сервер." if sent else "Отправка выключена (local-only).")
     return 0
 

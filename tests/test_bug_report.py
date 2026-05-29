@@ -36,15 +36,17 @@ def test_build_report_has_no_pii_fields():
     assert rep["source"] == "error" and rep["runner"] == "claude"
 
 
-def test_send_disabled_by_default(monkeypatch):
+def test_send_off_without_url(monkeypatch):
+    # дефолт ВКЛ (флаг не задан), но без URL отправки быть не может
     monkeypatch.delenv("AIOS_BUGREPORT", raising=False)
     monkeypatch.delenv("AIOS_BUGREPORT_URL", raising=False)
     rep = bug_report.build_report(source="error", description="x")
-    assert bug_report.send(rep) is False, "по умолчанию отправка должна быть выключена"
+    assert bug_report.send(rep) is False, "без URL отправка невозможна"
 
 
-def test_send_disabled_without_url(monkeypatch):
-    monkeypatch.setenv("AIOS_BUGREPORT", "1")
-    monkeypatch.setenv("AIOS_BUGREPORT_URL", "")
+def test_send_off_when_disabled(monkeypatch):
+    # явное выключение AIOS_BUGREPORT=0 даже при заданном URL
+    monkeypatch.setenv("AIOS_BUGREPORT", "0")
+    monkeypatch.setenv("AIOS_BUGREPORT_URL", "https://example.test/bugreport")
     rep = bug_report.build_report(source="error", description="x")
-    assert bug_report.send(rep) is False, "без URL отправка невозможна даже при =1"
+    assert bug_report.send(rep) is False, "AIOS_BUGREPORT=0 → отправки нет"
