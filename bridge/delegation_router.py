@@ -16,6 +16,8 @@ delegation_router.py — парсер и маршрутизатор тегов �
   [STATUS]                      — произвольный статус-апдейт в свой топик
   [MEMORY_UPDATE]               — агент хочет обновить свой context.md
   [FILE:/path/to/file]           — агент хочет отправить файл пользователю в TG
+  [RESTART] причина              — мост перезапускается и ПОСЛЕ старта возвращается
+                                   к агенту (резюмит сессию) с напоминанием о причине
 
 Парсер ― регулярки с re.MULTILINE | re.DOTALL, устойчивые к незакрытым тегам.
 
@@ -42,7 +44,7 @@ log = logging.getLogger("bridge.router")
 # [TAG] текст до конца строки — single-line
 # [TAG:args] текст до конца строки — single-line с args
 # [TAG]...[/TAG] / [TAG:args]...[/TAG] — multi-line
-_TAG_NAMES = r"DELEGATE|RESULT|WAITING_FOR|ASK_USER|APPROVAL_NEEDED|STATUS|MEMORY_UPDATE|FILE"
+_TAG_NAMES = r"DELEGATE|RESULT|WAITING_FOR|ASK_USER|APPROVAL_NEEDED|STATUS|MEMORY_UPDATE|FILE|RESTART"
 
 _TAG_RE = re.compile(
     r"\[(?P<tag>" + _TAG_NAMES + r")"
@@ -183,6 +185,14 @@ def has_approval(tags: list[ParsedTag]) -> bool:
     return any(t.tag == "APPROVAL_NEEDED" for t in tags)
 
 
+def restart_reason(tags: list[ParsedTag]) -> Optional[str]:
+    """Если агент попросил рестарт ([RESTART] ...) — вернуть причину (или ''), иначе None."""
+    for t in tags:
+        if t.tag == "RESTART":
+            return (t.body or "").strip()
+    return None
+
+
 
 def extract_files(tags: list[ParsedTag]) -> list[ParsedTag]:
     return [t for t in tags if t.tag == "FILE"]
@@ -251,6 +261,7 @@ class DelegationRouter:
             "ask_user": has_ask_user(tags),
             "approval_needed": has_approval(tags),
             "files": extract_files(tags),
+            "restart_reason": restart_reason(tags),
             "raw_tags": tags,
         }
 

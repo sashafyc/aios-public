@@ -27,6 +27,7 @@ import logging
 import os
 import shutil
 import signal
+import subprocess
 import sys
 import tempfile
 import time
@@ -362,6 +363,75 @@ class Bridge:
             report_marker.touch()
         except Exception:
             log.exception("startup_announce: send failed")
+
+    def _schedule_restart(self, agent_name: str, reason: str) -> bool:
+        """Записать «restart-note» и отложенно перезапустить мост.
+        После рестарта restart_resume() вернётся к агенту и резюмит его сессию,
+        чтобы он понимал, что чинил. Возвращает True если рестарт запланирован."""
+        note = {"agent": agent_name, "reason": (reason or "")[:500], "ts": time.time()}
+        try:
+            (LOG_DIR / ".restart_resume.json").write_text(
+                json.dumps(note, ensure_ascii=False), encoding="utf-8")
+        except Exception:
+            log.exception("schedule_restart: не смог записать restart-note")
+        # Команда рестарта: systemd (Linux) / launchd (Mac). Отложенно (sleep), чтобы
+        # успеть дослать ответ. Детачим в новую сессию.
+        if sys.platform == "darwin":
+            restart_cmd = f"launchctl kickstart -k gui/{os.getuid()}/com.aios-public.bridge"
+        else:
+            sudo = "" if os.geteuid() == 0 else "sudo "
+            restart_cmd = f"{sudo}systemctl restart aios-bridge"
+        try:
+            subprocess.Popen(
+                ["sh", "-c", f"sleep 3; {restart_cmd}"],
+                start_new_session=True,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+            log.info("[%s] restart scheduled (reason=%r)", agent_name, reason[:80])
+            return True
+        except Exception:
+            log.exception("[%s] schedule_restart failed", agent_name)
+            return False
+
+    async def restart_resume(self) -> None:
+        """После старта моста: если был self-restart, вернуться к инициировавшему
+        агенту и резюмить его сессию (claude --resume через сохранённый session_id),
+        напомнив причину — чтобы агент понимал, что чинил, и продолжил/подтвердил."""
+        note_path = LOG_DIR / ".restart_resume.json"
+        if not note_path.exists():
+            return
+        try:
+            note = json.loads(note_path.read_text(encoding="utf-8"))
+        except Exception:
+            note_path.unlink(missing_ok=True)
+            return
+        # удаляем сразу — чтобы не зациклиться, если резюм-ран уронит мост
+        note_path.unlink(missing_ok=True)
+        agent = note.get("agent")
+        reason = note.get("reason", "")
+        ts = note.get("ts", 0)
+        if not agent or agent not in agents_registry.AGENTS:
+            return
+        if time.time() - ts > 600:  # устаревшая нота — игнор
+            return
+        cfg = agents_registry.AGENTS.get(agent)
+        if not cfg or not cfg.topic_id:
+            return
+        for _ in range(30):  # ждём регистрацию бота
+            if self._bots.get(agent) is not None:
+                break
+            if self._shutdown.is_set():
+                return
+            await asyncio.sleep(0.5)
+        if self._bots.get(agent) is None:
+            return
+        text = (
+            f"🔄 Мост перезапущен — ты инициировал рестарт, чтобы применить: «{reason}». "
+            "Сессия восстановлена (ты помнишь, что делал). Проверь, что всё поднялось "
+            "(при необходимости — doctor), и подтверди пользователю, что готово, "
+            "либо продолжи с места остановки."
+        )
+        await self._run_agent(agent, text, caller="user", topic_id=cfg.topic_id)
 
     async def deliver_user_message(self, agent_name: str, text: str, *, topic_id: int, is_forward: bool = False) -> None:
         log_event("user_msg", to=agent_name, topic=topic_id, text=text, source="user")
@@ -857,7 +927,7 @@ class Bridge:
         for _d in parsed["delegations"]:
             log.info("[%s] DELEGATE → %s task=%s body_chars=%d",
                      agent_name, _d["to"], _d["task_id"], len(_d["text"] or ""))
-        # Опциональный дамп полного выхлопа агента (для отладки баг #3)
+        # Опциональный дамп полного выхлопа агента (для отладки)
         if os.getenv("DUMP_AGENT_OUTPUTS", "0") == "1":
             try:
                 dump_dir = LOG_DIR / "agent_outputs"
@@ -916,6 +986,26 @@ class Bridge:
             caption = t.body.strip() if t.args else ""
             if file_path:
                 await self._send_file(agent_name, file_path, caption=caption, thread_id=eff_reply_topic)
+
+        # [RESTART] — агент просит перезапустить мост. Дослали ответ выше → планируем
+        # рестарт; после старта restart_resume() вернётся к агенту и резюмит сессию.
+        if parsed.get("restart_reason") is not None:
+            _reason = parsed["restart_reason"] or "(без описания)"
+            if self._schedule_restart(agent_name, _reason):
+                await self._send_from(
+                    agent_name,
+                    "🔄 Перезапускаю мост (~10–15 сек). После старта вернусь к тебе "
+                    "и подтвержу, что всё применилось — пропаду ненадолго.",
+                    thread_id=eff_reply_topic,
+                )
+            else:
+                await self._send_from(
+                    agent_name,
+                    "⚠️ Не смог перезапустить мост сам (нет прав?). Попроси пользователя "
+                    "выполнить `bash $AIOS_ROOT/scripts/enable.sh` или "
+                    "`sudo systemctl restart aios-bridge`.",
+                    thread_id=eff_reply_topic,
+                )
 
         for d in parsed["delegations"]:
             # Защита от циклов/бесконечной делегации: на глубине >= лимита — стоп.
@@ -2130,6 +2220,8 @@ async def main() -> None:
     tasks = [asyncio.create_task(bridge.maintenance_loop(), name="maintenance")]
     # Стартовый welcome + self-check в топик Сисадмина (ждёт регистрацию бота внутри).
     tasks.append(asyncio.create_task(bridge.startup_announce(), name="startup-announce"))
+    # Если был self-restart — вернуться к инициировавшему агенту и резюмить его сессию.
+    tasks.append(asyncio.create_task(bridge.restart_resume(), name="restart-resume"))
     # Несколько агентов могут делить один bot token (напр. все 3 агента →
     # BOT_TOKEN). На один токен допустим только один getUpdates-поллер —
     # иначе Telegram отвечает TelegramConflictError на оба. Для «вторичных»

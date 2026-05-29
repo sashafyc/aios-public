@@ -219,3 +219,17 @@ def test_router_waiting_state():
     )
     assert out["waiting_for"] == ["scriber:base-x"]
     assert len(out["delegations"]) == 1
+
+
+def test_router_restart_tag():
+    r = dr.DelegationRouter(agents_registry)
+    out = r.handle("sysadmin", "Сохранил ключ. [RESTART] добавил DEEPSEEK_API_KEY")
+    assert out["restart_reason"] == "добавил DEEPSEEK_API_KEY"
+    assert "[RESTART]" not in out["clean_text"]
+    assert "Сохранил ключ." in out["clean_text"]
+
+
+def test_router_no_restart_by_default():
+    r = dr.DelegationRouter(agents_registry)
+    out = r.handle("assistant", "Просто текст без тегов.")
+    assert out["restart_reason"] is None
