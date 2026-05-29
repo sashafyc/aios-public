@@ -41,7 +41,13 @@ chmod 600 bridge/.env
 # заполни BOT_TOKEN, AIOS_GROUP_CHAT_ID, AIOS_ROOT (=абсолютный путь установки)
 ```
 
-В `bridge/agents.toml` пропиши реальные `topic_id` для трёх агентов и `aios_root`/`group_chat_id` в `[global]`.
+Создай конфиг агентов из шаблона и пропиши значения:
+```bash
+cp bridge/agents.toml.example bridge/agents.toml
+# в bridge/agents.toml укажи реальные topic_id для трёх агентов
+# и aios_root/group_chat_id в [global]
+```
+> `bridge/agents.toml` — твой личный конфиг (gitignored): `git pull` при обновлении его НЕ трогает, поэтому кастомные агенты и правки не теряются. В репозитории — только `agents.toml.example`.
 
 Подставь путь в `settings.json`:
 ```bash

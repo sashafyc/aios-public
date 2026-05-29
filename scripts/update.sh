@@ -57,6 +57,29 @@ confirm() {  # confirm "Вопрос?" → 0 если да; при --yes все�
     [[ "$reply" =~ ^([yYдД]|yes|да)$ ]]
 }
 
+# ───────── Telegram-уведомление (как у watchdog) ─────────
+# Нужно чтобы недельный `--check` из cron САМ сообщал в группу о новой версии,
+# а не молча писал в лог. Берём токен/чат из .env; топик — UPDATE_TOPIC_ID или
+# (fallback) WATCHDOG_TOPIC_ID (топик Сисадмина).
+ENV_FILE="$BRIDGE/.env"
+if [[ -f "$ENV_FILE" ]]; then
+    set -a
+    # shellcheck disable=SC1090
+    source "$ENV_FILE"
+    set +a
+fi
+TG_BASE="${TG_API_BASE:-https://api.telegram.org}"
+NOTIFY_CHAT="${AIOS_GROUP_CHAT_ID:-}"
+NOTIFY_THREAD="${UPDATE_TOPIC_ID:-${WATCHDOG_TOPIC_ID:-}}"
+NOTIFY_STATE_DIR="$AIOS_ROOT/logs/bridge/update-state"
+
+notify_tg() {  # notify_tg "текст" — тихо шлёт в группу, если настроен бот
+    [[ -z "${BOT_TOKEN:-}" || -z "$NOTIFY_CHAT" ]] && return 0
+    local args=(-d "chat_id=$NOTIFY_CHAT" --data-urlencode "text=$1" -d "disable_web_page_preview=true")
+    [[ -n "$NOTIFY_THREAD" ]] && args+=(-d "message_thread_id=$NOTIFY_THREAD")
+    curl -s -X POST "$TG_BASE/bot${BOT_TOKEN}/sendMessage" "${args[@]}" >/dev/null 2>&1 || true
+}
+
 # ───────── предусловия ─────────
 cd "$AIOS_ROOT"
 command -v git >/dev/null 2>&1 || { err "git не найден"; exit 1; }
@@ -102,6 +125,15 @@ show_changelog
 # --check: только сообщить, ничего не делать. Обнова есть → exit 0.
 if [[ "$CHECK_ONLY" == "1" ]]; then
     ok "Доступно обновление $REMOTE_VER. Для установки: bash scripts/update.sh --yes"
+    # Уведомить в Telegram ОДИН раз на версию (чтобы недельный cron не спамил).
+    mkdir -p "$NOTIFY_STATE_DIR"
+    marker="$NOTIFY_STATE_DIR/notified-$REMOTE_VER"
+    if [[ ! -f "$marker" ]]; then
+        notify_tg "🆕 Вышла новая версия aios-public: $LOCAL_VER → $REMOTE_VER.
+Чтобы установить — напиши Сисадмину «обнови систему». Он сделает бэкап, прогонит тесты и обновит безопасно — твои настройки, ключи и агенты сохранятся."
+        touch "$marker"
+        ok "Уведомление отправлено в Telegram (если бот настроен)"
+    fi
     exit 0
 fi
 
@@ -134,8 +166,9 @@ fi
 echo "$LOCAL_REF" > "$BACKUP_DIR/PREV_COMMIT"
 
 # ───────── stash локальных правок ─────────
-# agents.toml / settings*.json / правки CLAUDE.md отслеживаются git и могут
-# конфликтовать с pull. Прячем их в stash, чтобы pull прошёл fast-forward.
+# settings*.json и правки CLAUDE.md отслеживаются git и могут конфликтовать с
+# pull. Прячем их в stash, чтобы pull прошёл fast-forward. (agents.toml gitignored
+# — pull его не трогает, stash его не касается, остаётся как есть.)
 STASHED=0
 if [[ -n "$(git status --porcelain)" ]]; then
     git stash push -u -m "aios-update-$TS" >/dev/null 2>&1 && STASHED=1
@@ -162,7 +195,7 @@ ok "Код обновлён до $REMOTE_VER"
 
 # ───────── вернуть локальные правки конфигов ─────────
 # Пробуем вернуть stash поверх нового кода. Конфликт по отслеживаемым файлам
-# (agents.toml / settings*.json / CLAUDE.md) возможен — тогда оставляем бэкап
+# (settings*.json / правки CLAUDE.md) возможен — тогда оставляем бэкап
 # и честно предупреждаем, НЕ затирая ничего молча.
 CONFLICTS=""
 if [[ "$STASHED" == "1" ]]; then

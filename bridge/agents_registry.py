@@ -19,7 +19,14 @@ from path_config import aios_root
 
 log = logging.getLogger("bridge.registry")
 
-_TOML_PATH = Path(__file__).parent / "agents.toml"
+# agents.toml — пользовательский конфиг (его генерит install.sh, он gitignored,
+# чтобы git pull при обновлении его НЕ трогал и не было конфликтов). В репозитории
+# трекается только шаблон agents.toml.example — он же используется как fallback
+# для тестов/CI/свежего клона, где реального agents.toml ещё нет.
+_BRIDGE_DIR = Path(__file__).parent
+_TOML_PATH = _BRIDGE_DIR / "agents.toml"
+if not _TOML_PATH.exists():
+    _TOML_PATH = _BRIDGE_DIR / "agents.toml.example"
 
 # ───────────── defaults ─────────────
 # AIOS_ROOT — корень установки (от path_config: env AIOS_ROOT / toml / автоопределение).

@@ -3,6 +3,11 @@
 bridge/.env
 *.env
 
+# Конфиг агентов — пользовательский (генерит install.sh). git pull его не трогает,
+# поэтому кастомные агенты и правки не теряются при обновлении. В репо — только
+# шаблон bridge/agents.toml.example.
+bridge/agents.toml
+
 # Runtime-состояние
 .bridge.lock
 bridge/.bridge.lock
