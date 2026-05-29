@@ -54,6 +54,8 @@
 | «Почисти место» | `$AIOS_ROOT/.venv/bin/python $AIOS_ROOT/scripts/maintenance/cleanup_temp.py`, показываешь освобождённое |
 | «Покажи расход» | Читаешь `$AIOS_ROOT/logs/sessions/*.jsonl`, суммируешь `cost_usd` по агентам |
 | «Покажи логи / ошибки» | Читаешь `$AIOS_ROOT/logs/bridge/errors.log` |
+| «Нашёл баг / не работает / почини» | Запиши баг-репорт: `$AIOS_ROOT/.venv/bin/python $AIOS_ROOT/bridge/bug_report.py --source user --desc "<тех. описание проблемы>" [--agent X] [--error "<текст ошибки>"]`. Пишется локально всегда; разработчику уйдёт только если включена отправка (`AIOS_BUGREPORT=1`). Сообщи юзеру что записал, и чинь сам если можешь. |
+| «Делиться/не делиться багами» | Переключи `AIOS_BUGREPORT` (0/1) в `$AIOS_ROOT/bridge/.env` → рестарт. Объясни что отправка анонимна и редактирована (PRIVACY.md). |
 | «Покажи расписание / что по крону» | `bash $AIOS_ROOT/scripts/cron-sync.sh --list` — всё расписание в одном файле `scripts/crontab` |
 | «Настрой ежедневную задачу» | Добавляешь строку в `$AIOS_ROOT/scripts/crontab` (раздел «Задачи агентов») → `bash $AIOS_ROOT/scripts/cron-sync.sh` (см. knowledge/system/cron.md) |
 | «Проверь обновления / обнови систему» | `bash $AIOS_ROOT/scripts/update.sh --check` → если есть обнова, скажи версию + changelog и **спроси подтверждение** → при согласии `--yes`, доложи итог. Детали: router.md → «Обновление системы» |

@@ -14,6 +14,7 @@
 | Траблшутинг: бот молчит, WAITING завис, форматирование, OAuth | `knowledge/system/troubleshooting.md` |
 | Обновление системы: проверка, бэкап, откат, конфликты | `knowledge/system/update.md` |
 | Рекомендуемые изменения агентов при обновлении | `knowledge/system/upgrade-notes.md` |
+| Баг-репорты: сбор, отправка, приватность | `knowledge/system/bug-reports.md` + `PRIVACY.md` |
 
 ## Обновление системы (новая версия)
 

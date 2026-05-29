@@ -69,6 +69,15 @@ tests/       — тесты
 - Runner'ы (LLM) — `knowledge/system/runners.md`
 - Траблшутинг — `knowledge/system/troubleshooting.md`
 
+## 💼 Нужна агентная система под ваш бизнес?
+
+aios-public — открытый каркас, который можно развернуть самому. Если нужна **кастомная AI-команда под процессы вашей компании** — делаем консалтинг по автоматизации и внедрение под ключ, **особенно в B2B-продажах** (аутрич, поиск ЛПР, квалификация лидов, подготовка КП).
+
+Связь:
+- 🌐 [a-invest.pro](https://a-invest.pro/)
+- ✉️ [ain@a-invest.pro](mailto:ain@a-invest.pro)
+- 💬 [Telegram @sashafyc](https://t.me/sashafyc)
+
 ## Лицензия
 
 MIT — см. [LICENSE](LICENSE).

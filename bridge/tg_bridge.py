@@ -77,6 +77,7 @@ from conversation_log import log_event, log_delegation
 from session_logger import log_session
 from tg_formatter import format_for_telegram, split_for_telegram
 from redact import redact_secrets
+import bug_report
 from error_classifier import classify_error, ErrorKind
 from path_config import aios_root, bridge_log_dir, inbox_dir, queue_dir as get_queue_dir
 import rate_guard
@@ -689,6 +690,23 @@ class Bridge:
             log.error("[%s] runner error [%s]: %s (hint: %s)",
                       agent_name, classified.kind.value, safe_err, classified.hint)
             log_event("error", agent=agent_name, error=safe_err, kind=classified.kind.value)
+
+            # Баг-репорт: только НЕтранзиентные (UNKNOWN) — rate-limit/auth/overload это
+            # операционные, не баги. Локально всегда; отправка — лишь при opt-in (.env).
+            # Неблокирующе (executor), исключения внутри capture глушатся.
+            if classified.kind == ErrorKind.UNKNOWN:
+                try:
+                    asyncio.get_event_loop().run_in_executor(
+                        None,
+                        lambda: bug_report.capture(
+                            source="error",
+                            description=f"runner error in agent {agent_name}",
+                            error=result.error, agent=agent_name, runner=_provider,
+                            error_kind=classified.kind.value, version=BRIDGE_VERSION,
+                        ),
+                    )
+                except Exception:
+                    pass
 
             # умная реакция по типу ошибки
             if classified.kind == ErrorKind.RATE_LIMIT:

@@ -416,6 +416,29 @@ _write_pkg_sudoers() {
     fi
 }
 
+# ───────── Шаг 4.6: анонимные баг-репорты (опц., по умолчанию ВЫКЛ) ─────────
+BUGREPORT="${AIOS_BUGREPORT:-0}"
+step_bugreport() {
+    b " Шаг 4.6: Анонимные баг-репорты (опционально)"; hr
+    if [[ "$NONINTERACTIVE" == 1 ]]; then
+        [[ "$BUGREPORT" == 1 ]] && ok "NI: отправка баг-репортов ВКЛ (AIOS_BUGREPORT=1)" \
+            || ok "NI: баг-репорты только локально (по умолчанию выкл)"
+        return 0
+    fi
+    cat > "$TTY" <<'EOF'
+    Можно анонимно делиться баг-репортами — это помогает быстрее чинить проблемы.
+    Уходит: версия, ОС, тип ошибки, обрезанный стектрейс с заменой путей.
+    НЕ уходит: твои файлы, переписка, ключи, личные данные.
+    Всё всегда дублируется локально (logs/bugs/). Выключить — в любой момент.
+    Подробности — PRIVACY.md.
+EOF
+    if confirm " Делиться анонимными баг-репортами?"; then
+        BUGREPORT="1"; ok "Спасибо! Включено (анонимно, редактированно)"
+    else
+        BUGREPORT="0"; ok "Только локально — ничего не отправляется"
+    fi
+}
+
 # ───────── Шаг 5: генерация конфигов + запуск ─────────
 step_generate() {
     b " Шаг 5: Генерирую конфиги"; hr
@@ -434,6 +457,8 @@ step_generate() {
         echo "DAILY_RESET_HOUR=6"
         echo "DAILY_RESET_MINUTE=30"
         echo "WATCHDOG_TOPIC_ID=\"$(_envq "$TOPIC_SYSADMIN")\""
+        echo "AIOS_BUGREPORT=$BUGREPORT"
+        echo "AIOS_BUGREPORT_URL=\"$(_envq "${AIOS_BUGREPORT_URL:-}")\""
     } > "$bridge/.env"
     chmod 600 "$bridge/.env"
     ok ".env создан (chmod 600)"
@@ -584,6 +609,7 @@ main() {
     step_llm
     step_voice
     step_pkg_perm
+    step_bugreport
     step_generate
     step_launch
 }
