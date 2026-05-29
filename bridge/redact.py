@@ -1,7 +1,7 @@
 """
 redact.py — маскирование секретов в логах и ответах агентов.
 
-v9.10: regex-based redaction. Паттерны: API keys, tokens, passwords.
+Regex-based redaction. Паттерны: API keys, tokens, passwords.
 Короткие (<18 символов) маскируются полностью, длинные — first 4 + last 4.
 
 Использование:

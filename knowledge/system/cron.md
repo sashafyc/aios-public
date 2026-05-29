@@ -1,40 +1,52 @@
-# Cron — запланированные задачи
+# Cron — единое расписание проекта
 
-Агент может получать задачи по расписанию (утренний отчёт, ежедневная проверка).
+Всё, что выполняется по расписанию, живёт в **одном файле** — `scripts/crontab`. Это единственный источник правды: мониторинг (watchdog, doctor), обслуживание (чистка temp), проверка обновлений и задачи агентов. Не нужно искать задачи по разным местам.
 
-## Как работает
+> **ПРАВИЛО (для всех агентов):** никогда не создавай свой cron — ни `crontab -e`, ни отдельные cron-файлы, ни launchd-задачи. Любое расписание добавляется ТОЛЬКО в `scripts/crontab` и применяется через `cron-sync.sh`. Рабочие агенты регулярную задачу не заводят сами — просят Сисадмина (см. `agents/_shared/escalation.md`).
 
-`bridge/trigger.py` кладёт JSON-файл в `bridge/queue/`. Мост опрашивает папку и выполняет задачу в своём event loop'е — без поднятия второго процесса.
+## Единый манифест: `scripts/crontab`
 
-## Изолированные сессии
+Обычный crontab-синтаксис. `__AIOS_ROOT__` подставляется на реальный путь установки при синке. Что внутри из коробки:
 
-Флаг `--isolated` = одноразовый запуск без `--resume`. Cron-задача НЕ ломает основную сессию агента (она идёт в отдельной сессии).
+| Когда | Что |
+|---|---|
+| каждые 5 мин | watchdog — жив ли мост, не зависла ли очередь, есть ли место на диске |
+| каждые 2 часа | doctor health-check → `logs/bridge/doctor.log` |
+| ежедневно 04:30 | чистка `workspace/temp/` старше 14 дней |
+| пн 09:00 | проверка обновлений (`update.sh --check`) → `logs/bridge/update-check.log` |
+| (по желанию) | задачи агентов — cron-сессии через `trigger.py --isolated` |
 
-## Примеры запуска
+## Применить изменения
 
-```bash
-# Утренний отчёт агенту (preset)
-python3 bridge/trigger.py --agent sysadmin --message morning_review --isolated
-
-# Произвольное сообщение
-python3 bridge/trigger.py --agent assistant --message "Проверь почту" --isolated
-
-# Daily reset вручную
-python3 bridge/trigger.py daily_reset
-```
-
-## Готовые пресеты
-
-`morning_review`, `daily_scan`, `daily_check`, `health` (см. PRESETS в trigger.py).
-
-## Настройка cron (Linux)
+После правки `scripts/crontab`:
 
 ```bash
-crontab -e
-# Каждое утро в 9:00 — отчёт Сисадмина:
-0 9 * * * cd /home/aios/aios-public && python3 bridge/trigger.py --agent sysadmin --message morning_review --isolated
+bash scripts/cron-sync.sh            # применить манифест в crontab
+bash scripts/cron-sync.sh --list     # показать расписание и установлен ли блок
+bash scripts/cron-sync.sh --dry-run  # показать что будет, без записи
 ```
 
-На Mac — `launchd` или `cron` аналогично.
+`cron-sync.sh` вставляет манифест в crontab внутри управляемого блока с маркерами и **не трогает остальные (чужие) строки** crontab. `scripts/enable.sh` вызывает его автоматически при настройке автозапуска.
 
-Через Сисадмина: скажи «настрой ежедневный отчёт в 9 утра» — добавит строку в crontab.
+## Задачи агентов (cron-сессии)
+
+Чтобы агент выполнял рутину по расписанию — добавь строку в раздел «Задачи агентов» манифеста:
+
+```
+0 9 * * *   AIOS_ROOT=__AIOS_ROOT__ __AIOS_ROOT__/.venv/bin/python __AIOS_ROOT__/bridge/trigger.py --agent assistant --message "Собери утренний дайджест" --isolated
+```
+
+Флаг `--isolated` = одноразовый запуск без `--resume`: cron-задача идёт отдельной сессией и НЕ ломает основной диалог агента. Вместо текста можно дать preset-алиас (`morning_review`, `daily_scan`, `daily_check`, `health` — см. PRESETS в `trigger.py`).
+
+## Как это работает под капотом
+
+`trigger.py` кладёт JSON-файл в `bridge/queue/`. Живой процесс моста опрашивает папку и выполняет задачу в своём event loop'е — без поднятия второго процесса.
+
+## Чего в cron НЕ должно быть
+
+- **Daily-reset сессий** и **keep-alive кэша** делает сам процесс моста (по `DAILY_RESET_HOUR/MINUTE` из `.env`). В cron их добавлять не нужно.
+- **Сам мост** держится живым через systemd (Linux) / launchd (Mac), не через cron.
+
+## Через Сисадмина
+
+Скажи «покажи расписание» или «настрой агенту X задачу в 9 утра» — Сисадмин покажет/отредактирует `scripts/crontab` и применит через `cron-sync.sh`.

@@ -14,6 +14,7 @@
 | `system/cron.md` | Запланированные задачи (trigger.py) |
 | `system/state-machine.md` | Состояния агента, daily reset, keep-alive, compact |
 | `system/troubleshooting.md` | Что делать когда что-то сломалось |
+| `system/update.md` | Безопасное обновление до новой версии (бэкап, откат, конфликты) |
 
 ## Пользовательские знания (твои темы)
 

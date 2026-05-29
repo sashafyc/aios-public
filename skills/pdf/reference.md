@@ -541,11 +541,7 @@ with open("cropped.pdf", "wb") as output:
 - `pdfimages` is much faster than rendering pages
 - Use low resolution for previews, high resolution for final output
 
-### 4. For Form Filling
-- pdf-lib maintains form structure better than most alternatives
-- Pre-validate form fields before processing
-
-### 5. Memory Management
+### 4. Memory Management
 ```python
 # Process PDFs in chunks
 def process_large_pdf(pdf_path, chunk_size=10):

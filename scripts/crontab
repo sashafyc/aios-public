@@ -1,0 +1,46 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# aios-public — ЕДИНОЕ РАСПИСАНИЕ (cron)
+# ═══════════════════════════════════════════════════════════════════════════
+# Это единственный источник правды по всему, что выполняется по расписанию:
+# мониторинг, обслуживание, проверка обновлений и задачи агентов.
+#
+# Применить изменения:   bash __AIOS_ROOT__/scripts/cron-sync.sh
+# Посмотреть текущее:     bash __AIOS_ROOT__/scripts/cron-sync.sh --list
+# Проверить без записи:   bash __AIOS_ROOT__/scripts/cron-sync.sh --dry-run
+#
+# Формат — стандартный crontab (мин час день месяц день_недели команда).
+# Время — по СИСТЕМНОЙ таймзоне сервера (проверь: `date`). __AIOS_ROOT__
+# подставляется на реальный путь установки при синке.
+#
+# ВАЖНО: daily-reset сессий и keep-alive кэша делает САМ процесс моста
+# (внутри tg_bridge, по DAILY_RESET_HOUR/MINUTE из .env) — В CRON ИХ НЕ НАДО.
+# Сам мост держится живым через systemd/launchd, не через cron.
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+# ─────────────────────── Система: мониторинг и обслуживание ───────────────────────
+
+# Watchdog: процесс моста жив? очередь не зависла? есть место на диске? — каждые 5 мин
+*/5 * * * *   AIOS_ROOT=__AIOS_ROOT__ bash __AIOS_ROOT__/scripts/monitoring/bridge-watchdog.sh
+
+# Health-check (doctor): короткий итог в logs/bridge/doctor.log — каждые 2 часа
+0 */2 * * *   AIOS_ROOT=__AIOS_ROOT__ bash __AIOS_ROOT__/scripts/monitoring/doctor-short.sh
+
+# Чистка временных файлов агентов старше 14 дней — ежедневно в 04:30
+30 4 * * *    AIOS_ROOT=__AIOS_ROOT__ __AIOS_ROOT__/.venv/bin/python __AIOS_ROOT__/scripts/maintenance/cleanup_temp.py
+
+# Проверка обновлений проекта (только проверка, не установка) — по понедельникам в 09:00
+# При наличии обновы Сисадмин сообщит и спросит подтверждение (см. knowledge/system/update.md).
+0 9 * * 1     AIOS_ROOT=__AIOS_ROOT__ bash __AIOS_ROOT__/scripts/update.sh --check >> __AIOS_ROOT__/logs/bridge/update-check.log 2>&1
+
+
+# ─────────────────────── Задачи агентов (cron-сессии) ───────────────────────
+# Запускают агента изолированной разовой сессией (без --resume), удобно для
+# регулярных рутин: утренний дайджест, ночной отчёт, периодический сбор и т.п.
+#
+# Шаблон строки:
+#   <мин> <час> <день> <мес> <дн_нед>  AIOS_ROOT=__AIOS_ROOT__ __AIOS_ROOT__/.venv/bin/python __AIOS_ROOT__/bridge/trigger.py --agent <имя> --message "<текст или preset>" --isolated
+#
+# Примеры (закомментированы — раскомментируй или добавь свои):
+# 0 9 * * *    AIOS_ROOT=__AIOS_ROOT__ __AIOS_ROOT__/.venv/bin/python __AIOS_ROOT__/bridge/trigger.py --agent assistant --message "Собери утренний дайджест задач" --isolated
+# 0 19 * * 5   AIOS_ROOT=__AIOS_ROOT__ __AIOS_ROOT__/.venv/bin/python __AIOS_ROOT__/bridge/trigger.py --agent assistant --message "Подведи итоги недели" --isolated

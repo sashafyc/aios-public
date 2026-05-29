@@ -11,7 +11,7 @@ delegation_router.py — парсер и маршрутизатор тегов �
   [DELEGATE:<agent>[:task-id]]  — делегирование другому агенту
   [RESULT:<agent>:<task-id>]    — результат делегации обратно инициатору
   [WAITING_FOR:<agent>[:task-id], ...]  — агент уходит в WAITING
-  [ASK_USER]                    — вопрос Саше
+  [ASK_USER]                    — вопрос пользователю
   [APPROVAL_NEEDED]             — запрос аппрува с inline-кнопками
   [STATUS]                      — произвольный статус-апдейт в свой топик
   [MEMORY_UPDATE]               — агент хочет обновить свой context.md
@@ -34,14 +34,14 @@ log = logging.getLogger("bridge.router")
 
 
 # Одна регулярка на все теги. Захватываем:
-#   group("tag")    — имя тега (DELEGATE, RESULT, ...)
-#   group("args")   — аргументы после ":" до "]"  (может быть пусто)
-#   group("body")   — тело многострочного блока (может быть пусто)
+# group("tag") — имя тега (DELEGATE, RESULT, ...)
+# group("args") — аргументы после ":" до "]" (может быть пусто)
+# group("body") — тело многострочного блока (может быть пусто)
 #
 # Варианты:
-#   [TAG] текст до конца строки                                  — single-line
-#   [TAG:args] текст до конца строки                             — single-line с args
-#   [TAG]...[/TAG]  /  [TAG:args]...[/TAG]                       — multi-line
+# [TAG] текст до конца строки — single-line
+# [TAG:args] текст до конца строки — single-line с args
+# [TAG]...[/TAG] / [TAG:args]...[/TAG] — multi-line
 _TAG_NAMES = r"DELEGATE|RESULT|WAITING_FOR|ASK_USER|APPROVAL_NEEDED|STATUS|MEMORY_UPDATE|FILE"
 
 _TAG_RE = re.compile(
@@ -107,8 +107,7 @@ def parse(text: str) -> list[ParsedTag]:
     out: list[ParsedTag] = []
     for m in _TAG_RE.finditer(text):
         if _is_inside_spans(m.start(), code_spans):
-            # v9.2: подняли до INFO — bug #3 потенциально из-за того что Tasks
-            # обернул [DELEGATE:...] в ```...``` блок. Видеть это в production.
+            # тег внутри fenced code block — это пример/цитата, не живая команда
             log.info(
                 "tag %s at pos %d is inside fenced markdown code block — ignored as quote",
                 m.group("tag"),

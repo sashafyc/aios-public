@@ -76,7 +76,7 @@ from conversation_log import log_event, log_delegation
 from session_logger import log_session
 from tg_formatter import format_for_telegram, split_for_telegram
 from redact import redact_secrets
-from error_classifier import classify_error, ErrorKind, extract_retry_after
+from error_classifier import classify_error, ErrorKind
 from path_config import aios_root, bridge_log_dir, inbox_dir, queue_dir as get_queue_dir
 import rate_guard
 
@@ -146,7 +146,7 @@ LOCK_PATH = Path(__file__).parent / ".bridge.lock"
 
 def _acquire_lockfile() -> None:
     """
-    v9.8: PID-lockfile предотвращает двойной polling (watchdog restart race).
+    PID-lockfile предотвращает двойной polling (watchdog restart race).
     Fingerprint = SHA256(sorted bot tokens)[:10] — разные наборы ботов не конфликтуют.
     """
     tokens = sorted(
@@ -217,7 +217,7 @@ class RunnerPool:
 
     def get_codex_fallback(self, name: str) -> AgentRunner:
         """
-        v9.10.5: fallback на Codex 5.4 при Claude rate limit.
+        Fallback на Codex при Claude rate limit.
         Тот же workdir, те же файлы — другой CLI + модель.
         Ключ в кэше: "{name}__codex_fallback" чтобы не затереть основной runner.
         """
@@ -256,12 +256,17 @@ class _QueuedInput:
     task_id: Optional[str] = None
     is_keepalive: bool = False
     is_forward: bool = False
+    depth: int = 0  # глубина цепочки делегаций (0 = сообщение от пользователя)
 
 
 # Дебаунс между подряд идущими msg от одного агента — склейка split-промпта.
 INBOX_DEBOUNCE_S = float(os.getenv("INBOX_DEBOUNCE_S", "1.5"))
-# v9.9: дебаунс для пересланных сообщений (пользователь пересылает 5 msg — ждём 1с после последнего)
+# Дебаунс для пересланных сообщений (пользователь пересылает 5 msg — ждём 1с после последнего)
 FORWARD_DEBOUNCE_S = float(os.getenv("FORWARD_DEBOUNCE_S", "1.0"))
+# Сколько живёт необработанный inline-approval до автоочистки (юзер не нажал кнопку).
+APPROVAL_TTL_S = float(os.getenv("APPROVAL_TTL_S", "21600"))  # 6 часов
+# Макс глубина цепочки делегаций (A→B→C→…). Дальше — стоп, чтобы исключить циклы.
+MAX_DELEGATION_DEPTH = int(os.getenv("MAX_DELEGATION_DEPTH", "3"))
 
 
 class Bridge:
@@ -272,10 +277,12 @@ class Bridge:
         self.router = DelegationRouter(agents_registry)
         self._bots: dict[str, object] = {}  # agent_name -> aiogram.Bot
         self._shutdown = asyncio.Event()
-        # pending approvals: key → agent_name (ждёт ответ пользователя)
-        self._pending_approvals: dict[str, str] = {}
+        # pending approvals: key → (agent_name, created_ts). created_ts нужен
+        # чтобы чистить протухшие (юзер проигнорировал кнопку) — иначе словарь
+        # растёт неограниченно за долгий uptime.
+        self._pending_approvals: dict[str, tuple[str, float]] = {}
         self._bg_tasks: set[asyncio.Task] = set()  # background isolated runs
-        # Per-agent input queue + worker (v9.2): склейка split-промпта,
+        # Per-agent input queue + worker : склейка split-промпта,
         # авто-flush сообщений накопленных пока агент BUSY.
         self._agent_queues: dict[str, asyncio.Queue] = {}
         self._agent_workers: dict[str, asyncio.Task] = {}
@@ -289,7 +296,7 @@ class Bridge:
 
     async def deliver_agent_message(
         self, from_agent: str, to_agent: str, text: str,
-        *, task_id: Optional[str] = None, kind: str = "delegation",
+        *, task_id: Optional[str] = None, kind: str = "delegation", depth: int = 0,
     ) -> None:
         log_event(
             "agent_msg",
@@ -317,15 +324,15 @@ class Bridge:
         if task_id:
             prefix += f" / task={task_id}"
         prefix += "]\n"
-        await self._run_agent(to_agent, prefix + text, caller=from_agent, task_id=task_id)
+        await self._run_agent(to_agent, prefix + text, caller=from_agent, task_id=task_id, depth=depth)
 
     async def _run_agent(
         self, agent_name: str, text: str,
         *, caller: str, topic_id: Optional[int] = None, task_id: Optional[str] = None,
-        is_keepalive: bool = False, is_forward: bool = False,
+        is_keepalive: bool = False, is_forward: bool = False, depth: int = 0,
     ) -> None:
         """
-        v9.2: ставит сообщение в per-agent очередь.
+        Ставит сообщение в per-agent очередь.
         Если worker для агента ещё не запущен — стартует.
         Worker сам делает debounce (склейка split-промпта) + serial run.
         """
@@ -340,7 +347,7 @@ class Bridge:
         item = _QueuedInput(
             text=text, caller=caller, topic_id=topic_id,
             task_id=task_id, is_keepalive=is_keepalive,
-            is_forward=is_forward,
+            is_forward=is_forward, depth=depth,
         )
         await self._agent_queues[agent_name].put(item)
         log.info(
@@ -388,7 +395,7 @@ class Bridge:
                         await self._run_agent_actual(
                             agent_name, first.text,
                             caller=first.caller, topic_id=first.topic_id,
-                            task_id=first.task_id, is_keepalive=True,
+                            task_id=first.task_id, is_keepalive=True, depth=first.depth,
                         )
                     except Exception:
                         log.exception("[%s] worker: keepalive run failed", agent_name)
@@ -399,7 +406,7 @@ class Bridge:
             # Обычный msg → дебаунс: ловим ещё msg в окне INBOX_DEBOUNCE_S,
             # склеиваем в один input. Keep-alive в окне — НЕ склеиваем,
             # обрабатываем отдельно после текущего батча.
-            # v9.9: forward coalescing — если первый msg = forward, используем
+            # forward coalescing — если первый msg = forward, используем
             # FORWARD_DEBOUNCE_S и РАСШИРЯЕМ окно при каждом новом forward.
             buffered: list[_QueuedInput] = [first]
             deferred_keepalive: Optional[_QueuedInput] = None
@@ -418,7 +425,7 @@ class Bridge:
                     deferred_keepalive = nxt
                     break
                 buffered.append(nxt)
-                # v9.9: каждый новый forward расширяет окно дебаунса
+                # каждый новый forward расширяет окно дебаунса
                 if nxt.is_forward:
                     has_forwards = True
                     deadline = asyncio.get_event_loop().time() + FORWARD_DEBOUNCE_S
@@ -455,7 +462,7 @@ class Bridge:
                     await self._run_agent_actual(
                         agent_name, merged_text,
                         caller=buffered[0].caller, topic_id=buffered[0].topic_id,
-                        task_id=buffered[0].task_id, is_keepalive=False,
+                        task_id=buffered[0].task_id, is_keepalive=False, depth=buffered[0].depth,
                     )
                 except Exception:
                     log.exception("[%s] worker: run failed", agent_name)
@@ -476,7 +483,7 @@ class Bridge:
                             caller=deferred_keepalive.caller,
                             topic_id=deferred_keepalive.topic_id,
                             task_id=deferred_keepalive.task_id,
-                            is_keepalive=True,
+                            is_keepalive=True, depth=deferred_keepalive.depth,
                         )
                     except Exception:
                         log.exception("[%s] worker: deferred keepalive failed", agent_name)
@@ -485,10 +492,43 @@ class Bridge:
 
         log.info("[%s] worker stopped", agent_name)
 
+    def _build_fallback_runner(self, agent_name: str, provider: str, cfg):
+        """Собрать раннер-замену для провайдера: claude→codex, codex→claude."""
+        if provider == "claude":
+            return self.runners.get_codex_fallback(agent_name)
+        return SubprocessRunner(
+            cfg.name, cfg.workdir, model="claude-sonnet-4-6",
+            timeout_s=cfg.timeout_s, settings_path=cfg.settings_path or SETTINGS_PATH,
+        )
+
+    async def _o4mini_lastresort(self, agent_name: str, cfg, text: str, eff_topic):
+        """Последняя попытка через o4-mini, когда Claude и Codex недоступны.
+        Возвращает успешный RunResult или None (сообщение об ошибке уже отправлено)."""
+        log.warning("[%s] trying o4-mini last-resort", agent_name)
+        try:
+            fb3 = CodexSubprocessRunner(cfg.name, cfg.workdir, model="o4-mini", timeout_s=cfg.timeout_s)
+            r = await fb3.run(text, resume=False)
+        except Exception:
+            log.exception("[%s] o4-mini fallback failed", agent_name)
+            await self._send_from(agent_name, "⚠️ Все провайдеры недоступны", thread_id=eff_topic)
+            return None
+        if r.error:
+            await self._send_from(
+                agent_name,
+                f"⚠️ Все провайдеры недоступны: {redact_secrets(r.error)}",
+                thread_id=eff_topic,
+            )
+            return None
+        log.info("[%s] o4-mini fallback succeeded", agent_name)
+        await self._send_from(
+            agent_name, "⚠️ Claude и Codex недоступны. Ответ через o4-mini.", thread_id=eff_topic
+        )
+        return r
+
     async def _run_agent_actual(
         self, agent_name: str, text: str,
         *, caller: str, topic_id: Optional[int] = None, task_id: Optional[str] = None,
-        is_keepalive: bool = False,
+        is_keepalive: bool = False, depth: int = 0,
     ) -> None:
         cfg = agents_registry.get(agent_name)
         if not cfg.enabled:
@@ -510,10 +550,6 @@ class Bridge:
         runner = self.runners.get(agent_name)
 
         stored_sid = self.sessions.get_session_id(agent_name)
-        # Запомним waiting_for до запуска — если это keepalive и агент не повторит тег, восстановим
-        original_waiting: list[str] = []
-        if is_keepalive:
-            original_waiting = list(self.sessions.load(agent_name).waiting_for)
         use_streaming = (
             cfg.stream
             and not is_keepalive
@@ -523,7 +559,7 @@ class Bridge:
         log.info("[%s] starting run sid=%s keepalive=%s stream=%s text=%r",
                  agent_name, (stored_sid or "new")[:8], is_keepalive, use_streaming, text[:120])
 
-        # v9.10.7: smart pre-run guard — если provider заблокирован, сразу fallback
+        # smart pre-run guard — если provider заблокирован, сразу fallback
         _provider = cfg.runner_type  # "claude" / "codex" / "gemini" / "deepseek"
         _used_fallback = False
         if rate_guard.is_blocked(_provider) and _provider in ("claude", "codex"):
@@ -582,7 +618,7 @@ class Bridge:
                       agent_name, classified.kind.value, safe_err, classified.hint)
             log_event("error", agent=agent_name, error=safe_err, kind=classified.kind.value)
 
-            # v9.10.1: умная реакция по типу ошибки
+            # умная реакция по типу ошибки
             if classified.kind == ErrorKind.RATE_LIMIT:
                 rate_guard.record_limit(_provider, reason="rate_limit")
                 _until = rate_guard.get_until_str(_provider)
@@ -595,49 +631,19 @@ class Bridge:
                         thread_id=eff_reply_topic,
                     )
                     try:
-                        if _provider == "claude":
-                            fb_runner = self.runners.get_codex_fallback(agent_name)
-                            result = await fb_runner.run(text, resume=False)
-                        else:
-                            # codex rate-limited → fallback to claude
-                            fb_runner = SubprocessRunner(
-                                cfg.name, cfg.workdir, model="claude-sonnet-4-6",
-                                timeout_s=cfg.timeout_s, settings_path=cfg.settings_path or SETTINGS_PATH,
-                            )
-                            result = await fb_runner.run(text, resume=False)
-                        if not result.error:
-                            log.info("[%s] codex fallback succeeded", agent_name)
-                        else:
-                            # Codex 5.4 тоже fail — пробуем o4-mini как последний шанс
-                            log.warning("[%s] primary fallback failed, trying o4-mini", agent_name)
-                            try:
-                                fb3 = CodexSubprocessRunner(cfg.name, cfg.workdir, model="o4-mini", timeout_s=cfg.timeout_s)
-                                result = await fb3.run(text, resume=False)
-                                if not result.error:
-                                    log.info("[%s] o4-mini fallback succeeded", agent_name)
-                                    await self._send_from(agent_name, "⚠️ Claude и Codex 5.4 недоступны. Ответ через o4-mini.", thread_id=eff_reply_topic)
-                                else:
-                                    await self._send_from(agent_name, f"⚠️ Все провайдеры недоступны: {redact_secrets(result.error)}", thread_id=eff_reply_topic)
-                                    return
-                            except Exception:
-                                log.exception("[%s] o4-mini fallback also failed", agent_name)
-                                await self._send_from(agent_name, "⚠️ Все провайдеры недоступны", thread_id=eff_reply_topic)
-                                return
+                        fb_runner = self._build_fallback_runner(agent_name, _provider, cfg)
+                        result = await fb_runner.run(text, resume=False)
                     except Exception:
-                        log.exception("[%s] fallback failed, trying o4-mini", agent_name)
-                        try:
-                            fb3 = CodexSubprocessRunner(cfg.name, cfg.workdir, model="o4-mini", timeout_s=cfg.timeout_s)
-                            result = await fb3.run(text, resume=False)
-                            if not result.error:
-                                log.info("[%s] o4-mini fallback succeeded", agent_name)
-                                await self._send_from(agent_name, "⚠️ Claude и Codex 5.4 недоступны. Ответ через o4-mini.", thread_id=eff_reply_topic)
-                            else:
-                                await self._send_from(agent_name, f"⚠️ Все провайдеры недоступны", thread_id=eff_reply_topic)
-                                return
-                        except Exception:
-                            log.exception("[%s] all fallbacks failed", agent_name)
-                            await self._send_from(agent_name, "⚠️ Все провайдеры недоступны", thread_id=eff_reply_topic)
+                        log.exception("[%s] primary fallback failed", agent_name)
+                        result = None
+                    if result is None or result.error:
+                        # Основной fallback не помог — последний шанс через o4-mini
+                        r = await self._o4mini_lastresort(agent_name, cfg, text, eff_reply_topic)
+                        if r is None:
                             return
+                        result = r
+                    else:
+                        log.info("[%s] fallback to %s succeeded", agent_name, _fb_label)
                 else:
                     # deepseek/gemini — нет fallback, алерт + ждём
                     _wait_s = rate_guard.remaining_s(_provider)
@@ -690,7 +696,7 @@ class Bridge:
                     log.exception("[%s] retry after %s failed", agent_name, classified.kind.value)
                     return
             elif classified.kind in (ErrorKind.AUTH, ErrorKind.AUTH_PERMANENT, ErrorKind.BILLING):
-                # v9.10.7: auth/billing — fallback + предупреждение + блокировка до :00/:30
+                # auth/billing — fallback + предупреждение + блокировка до :00/:30
                 rate_guard.record_auth_error(_provider)
                 _until = rate_guard.get_until_str(_provider)
                 if _provider in ("claude", "codex") and not _used_fallback:
@@ -702,13 +708,7 @@ class Bridge:
                         thread_id=eff_reply_topic,
                     )
                     try:
-                        if _provider == "claude":
-                            fb_runner = self.runners.get_codex_fallback(agent_name)
-                        else:
-                            fb_runner = SubprocessRunner(
-                                cfg.name, cfg.workdir, model="claude-sonnet-4-6",
-                                timeout_s=cfg.timeout_s, settings_path=cfg.settings_path or SETTINGS_PATH,
-                            )
+                        fb_runner = self._build_fallback_runner(agent_name, _provider, cfg)
                         result = await fb_runner.run(text, resume=False)
                         if not result.error:
                             log.info("[%s] auth fallback to %s succeeded", agent_name, _fb_label)
@@ -729,7 +729,7 @@ class Bridge:
                 await self._send_from(agent_name, f"⚠️ {safe_err}", thread_id=eff_reply_topic)
                 return
 
-        # v9.9: continuation prompt — если ответ обрезан по output limit,
+        # continuation prompt — если ответ обрезан по output limit,
         # отправляем текущую часть и запрашиваем продолжение (макс 2 раза).
         if getattr(result, 'is_truncated', False) and not is_keepalive:
             log.info("[%s] response truncated, requesting continuation", agent_name)
@@ -753,7 +753,7 @@ class Bridge:
             result.text = full_text
 
         parsed = self.router.handle(agent_name, result.text)
-        # v9.2 диагностика: видеть что распарсилось из ответа
+        # диагностика: видеть что распарсилось из ответа
         log.info(
             "[%s] parsed: delegations=%d results=%d waiting=%s ask_user=%s tags=%s clean_chars=%d",
             agent_name,
@@ -794,15 +794,6 @@ class Bridge:
             waiting_reason=None,
         )
 
-        # Защита: keep-alive не должен сбрасывать WAITING если агент забыл повторить тег
-        if is_keepalive and original_waiting and not parsed["waiting_for"]:
-            log.info("[%s] restoring waiting_for after keepalive: %s",
-                     agent_name, original_waiting)
-            st_restore = self.sessions.load(agent_name)
-            st_restore.waiting_for = list(original_waiting)
-            st_restore.state = State.WAITING
-            self.sessions.save(st_restore)
-
         if parsed["ask_user"]:
             await self._send_from(agent_name, "❓ Жду ответа от тебя.", thread_id=topic_id)
         for t in parsed["raw_tags"]:
@@ -837,10 +828,25 @@ class Bridge:
                 await self._send_file(agent_name, file_path, caption=caption, thread_id=eff_reply_topic)
 
         for d in parsed["delegations"]:
+            # Защита от циклов/бесконечной делегации: на глубине >= лимита — стоп.
+            if depth >= MAX_DELEGATION_DEPTH:
+                log.warning(
+                    "[%s] delegation → %s blocked: max depth %d reached (chain too deep / possible cycle)",
+                    agent_name, d["to"], MAX_DELEGATION_DEPTH,
+                )
+                await self._send_from(
+                    agent_name,
+                    f"⛔ Делегация остановлена: достигнута максимальная глубина "
+                    f"цепочки ({MAX_DELEGATION_DEPTH}). Задачу нужно решить без "
+                    f"дальнейшей передачи или вмешаться вручную.",
+                    thread_id=eff_reply_topic,
+                )
+                continue
             log_delegation(d["from"], d["to"], d["task_id"], d["text"])
             asyncio.create_task(
                 self.deliver_agent_message(
-                    d["from"], d["to"], d["text"], task_id=d["task_id"], kind="delegation"
+                    d["from"], d["to"], d["text"], task_id=d["task_id"],
+                    kind="delegation", depth=depth + 1,
                 )
             )
 
@@ -861,7 +867,8 @@ class Bridge:
 
             asyncio.create_task(
                 self.deliver_agent_message(
-                    agent_name, r["to"], r["text"], task_id=r["task_id"], kind="result"
+                    agent_name, r["to"], r["text"], task_id=r["task_id"],
+                    kind="result", depth=depth + 1,
                 )
             )
 
@@ -956,7 +963,7 @@ class Bridge:
 
             if parsed["clean_text"]:
                 text = parsed["clean_text"]
-                # v1.0.1: strip meta-tail from isolated responses.
+                # strip meta-tail from isolated responses.
                 # Agents often append "Готово. Итог:/Вот что сделано:" summaries
                 # which get split into a separate TG message and look like
                 # the agent is responding to its own report.
@@ -1202,11 +1209,23 @@ class Bridge:
         keepalive_cap = int(os.getenv("KEEPALIVE_MAX", "55"))
         while not self._shutdown.is_set():
             try:
-                # v9.10.3: hot-reload agents.toml
+                # hot-reload agents.toml
                 agents_registry.reload_if_changed()
 
                 # Обработка файловой очереди (trigger.py → cron агенты)
                 await self._process_queue()
+
+                # Чистка протухших inline-approval'ов (юзер проигнорировал кнопку)
+                if self._pending_approvals:
+                    _now_ts = datetime.now(MSK).timestamp()
+                    _stale = [
+                        k for k, (_, ts) in self._pending_approvals.items()
+                        if _now_ts - ts > APPROVAL_TTL_S
+                    ]
+                    for k in _stale:
+                        self._pending_approvals.pop(k, None)
+                    if _stale:
+                        log.info("purged %d stale pending approvals", len(_stale))
 
                 # Daily reset в 5-минутном окне начиная с DAILY_RESET_HOUR:MINUTE
                 now_msk = datetime.now(LOCAL_TZ)
@@ -1216,7 +1235,7 @@ class Bridge:
                 for name, cfg in agents_registry.AGENTS.items():
                     if not cfg.enabled:
                         continue
-                    # v9.10.5: skip agents added by hot-reload but not yet in session_manager
+                    # skip agents added by hot-reload but not yet in session_manager
                     if name not in self.sessions._workdirs:
                         continue
                     # WAITING keep-alive: каждые 30 мин пингуем агента чтобы кэш не умер
@@ -1273,8 +1292,9 @@ class Bridge:
             log.warning("[%s] no bot registered, cannot send approval", agent_name)
             return
 
-        key = f"{agent_name}:{int(datetime.now(MSK).timestamp())}"
-        self._pending_approvals[key] = agent_name
+        now_ts = datetime.now(MSK).timestamp()
+        key = f"{agent_name}:{int(now_ts)}"
+        self._pending_approvals[key] = (agent_name, now_ts)
 
         keyboard = InlineKeyboardMarkup(inline_keyboard=[[
             InlineKeyboardButton(text="✅ Подтвердить", callback_data=f"appr:yes:{key}"),
@@ -1304,7 +1324,8 @@ class Bridge:
         Обработать нажатие inline-кнопки (✅/❌).
         Убирает кнопки, обновляет сообщение, отправляет результат агенту.
         """
-        agent_name = self._pending_approvals.pop(key, None)
+        _entry = self._pending_approvals.pop(key, None)
+        agent_name = _entry[0] if _entry else None
 
         # Убрать кнопки из TG-сообщения
         try:
@@ -1356,7 +1377,7 @@ class Bridge:
                 archive_dir.mkdir(exist_ok=True)
                 shutil.copy2(ctx_file, archive_dir / f"{today}.md")
                 log.info("[%s] context.md snapshot → context_archive/%s.md", name, today)
-            # v9.7: session summary для personal-агентов перед daily reset
+            # session summary для personal-агентов перед daily reset
             # Скипаем если агент не получал реальных сообщений — чтобы не слать пустые саммари
             _had_real_activity = (
                 st.session_id
@@ -1401,24 +1422,6 @@ class Bridge:
             except (asyncio.CancelledError, asyncio.TimeoutError, Exception):
                 pass
         await self.runners.close_all()
-
-
-def _split_msg(text: str, limit: int) -> list[str]:
-    if len(text) <= limit:
-        return [text]
-    chunks = []
-    remaining = text
-    while remaining:
-        if len(remaining) <= limit:
-            chunks.append(remaining)
-            break
-        # искать ближайший перенос строки
-        cut = remaining.rfind("\n", 0, limit)
-        if cut == -1:
-            cut = limit
-        chunks.append(remaining[:cut])
-        remaining = remaining[cut:].lstrip("\n")
-    return chunks
 
 
 # ────────────────────── file attachments ──────────────────────
@@ -1581,12 +1584,12 @@ async def run_agent_poller(bridge: Bridge, cfg: agents_registry.AgentConfig) -> 
     my_topic_ids = set(cfg.topic_ids) if cfg.topic_ids else None
     my_chat_id = cfg.chat_id if cfg.chat_id else GROUP_CHAT_ID
 
-    # v9.7: multi-chat — поллер может слушать дополнительные чаты (personal_agents)
+    # multi-chat — поллер может слушать дополнительные чаты (personal_agents)
     my_chat_ids = {my_chat_id}
     if cfg.extra_chat_ids:
         my_chat_ids.update(cfg.extra_chat_ids)
 
-    # v9.10: media group buffer — TG шлёт каждый файл в группе отдельным update.
+    # media group buffer — TG шлёт каждый файл в группе отдельным update.
     # Буферизуем по media_group_id, отправляем агенту одним промптом.
     _media_group_buffers: dict[str, list] = {}  # media_group_id -> [message, ...]
     _media_group_timers: dict[str, asyncio.Task] = {}  # media_group_id -> debounce task
@@ -1598,7 +1601,7 @@ async def run_agent_poller(bridge: Bridge, cfg: agents_registry.AgentConfig) -> 
         if _eff_chat in my_chat_ids and _eff_chat != my_chat_id and _acfg.name != agent_name:
             _extra_chat_topic_map[(_eff_chat, _acfg.topic_id)] = _acfg.name
 
-    # v9.10.6: shared-token routing — агенты с тем же токеном в primary чате
+    # shared-token routing — агенты с тем же токеном в primary чате
     _shared_token_topic_map: dict[int, str] = {}  # topic_id → agent_name
     for _acfg in agents_registry.enabled_agents():
         if _acfg.name == agent_name or not _acfg.enabled:
@@ -1610,9 +1613,9 @@ async def run_agent_poller(bridge: Bridge, cfg: agents_registry.AgentConfig) -> 
         log.info("[%s] shared-token topics: %s", cfg.name, _shared_token_topic_map)
 
     def _resolve_agent(msg_chat_id: int, thread_id: int) -> tuple[str, agents_registry.AgentConfig]:
-        """v9.7: определить агента по (chat_id, topic_id). Fallback = владелец поллера."""
+        """Определить агента по (chat_id, topic_id). Fallback = владелец поллера."""
         if msg_chat_id == my_chat_id:
-            # v9.10.6: check shared-token agents first
+            # check shared-token agents first
             shared_name = _shared_token_topic_map.get(thread_id)
             if shared_name:
                 return shared_name, agents_registry.get(shared_name)
@@ -1651,12 +1654,12 @@ async def run_agent_poller(bridge: Bridge, cfg: agents_registry.AgentConfig) -> 
         thread = message.message_thread_id or 0
         msg_chat_id = message.chat.id
 
-        # v9.7: multi-chat routing
+        # multi-chat routing
         resolved_name, resolved_cfg = _resolve_agent(msg_chat_id, thread)
 
         # Фильтр по топику: только для primary чата (extra-чаты пропускаем всё)
         if msg_chat_id == my_chat_id:
-            # v9.10.6: also accept shared-token agent topics
+            # also accept shared-token agent topics
             if thread in _shared_token_topic_map:
                 pass  # accepted — will route via _resolve_agent
             elif my_topic_ids is not None:
@@ -1666,7 +1669,7 @@ async def run_agent_poller(bridge: Bridge, cfg: agents_registry.AgentConfig) -> 
                 if thread != my_topic:
                     return
 
-        # v9.10: media group buffer — если msg часть группы (несколько фото/документов),
+        # media group buffer — если msg часть группы (несколько фото/документов),
         # буферизуем и отправляем одним промптом после debounce 1.5с.
         mg_id = getattr(message, 'media_group_id', None)
         if mg_id:
@@ -1828,7 +1831,7 @@ async def run_agent_poller(bridge: Bridge, cfg: agents_registry.AgentConfig) -> 
         # Обрабатываются локально ботом, НЕ уходят в runner (0 токенов).
         # Неизвестные "/xxx" проваливаются в runner как обычный текст —
         # вдруг это вызов скилла.
-        # v9.7: используем resolved_name/resolved_cfg для multi-chat routing
+        # используем resolved_name/resolved_cfg для multi-chat routing
         if not has_files and text.startswith("/"):
             cmd_parts = text.split(None, 1)
             cmd = cmd_parts[0].split("@", 1)[0].lower()
@@ -1900,7 +1903,7 @@ async def run_agent_poller(bridge: Bridge, cfg: agents_registry.AgentConfig) -> 
                     log.exception("[%s] /help send failed", resolved_name)
                 return
 
-        # v9.9: forward detection — пересланные сообщения получают is_forward=True
+        # forward detection — пересланные сообщения получают is_forward=True
         # для forward coalescing в worker (склейка нескольких forward'ов в один промпт)
         _is_fwd = bool(message.forward_origin or message.forward_date)
         if _is_fwd:
@@ -1956,7 +1959,7 @@ async def run_agent_poller(bridge: Bridge, cfg: agents_registry.AgentConfig) -> 
             )
             return
 
-        # v9.7: session summary для personal-агентов перед reset
+        # session summary для personal-агентов перед reset
         if target_agent.startswith("personal_") and st_tgt.session_id:
             try:
                 tgt_cfg = agents_registry.get(target_agent)
@@ -1999,7 +2002,7 @@ async def run_agent_poller(bridge: Bridge, cfg: agents_registry.AgentConfig) -> 
         log.info("[%s] session reset via /new command by user %s",
                  target_agent, callback.from_user.id)
 
-    # v9.8: drain backlog — вычитать все pending updates без обработки.
+    # drain backlog — вычитать все pending updates без обработки.
     # Предотвращает шторм запусков после рестарта bridge.
     try:
         drained = await bot.get_updates(offset=-1, timeout=0)

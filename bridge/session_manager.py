@@ -34,7 +34,7 @@ MSK = timezone(timedelta(hours=3))
 
 class State(str, enum.Enum):
     IDLE = "IDLE"          # Процесса нет, только context.md на диске.
-    ACTIVE = "ACTIVE"      # Диалог с Сашей, сессия жива, idle timer работает.
+    ACTIVE = "ACTIVE"      # Диалог с пользователем, сессия жива, idle timer работает.
     WAITING = "WAITING"    # Ждёт результат делегации / cron / внешнего события. Timer выключен.
     BUSY = "BUSY"          # Tool call прямо сейчас. Переходное состояние.
 
@@ -120,7 +120,7 @@ class SessionManager:
 
     def on_incoming_message(self, agent: str) -> SessionState:
         """
-        Пришло сообщение агенту (от Саши или от другого агента).
+        Пришло сообщение агенту (от пользователя или от другого агента).
         IDLE/WAITING/ACTIVE → ACTIVE. Обновляем last_activity.
         """
         st = self.load(agent)
@@ -145,10 +145,20 @@ class SessionManager:
         st = self.load(agent)
         st.last_activity = self._now()
         if waiting_for:
+            # Мержим новые ключи с уже открытыми — агент мог добавить ещё одну
+            # делегацию, не повторив старые. Дубли убираем, порядок сохраняем.
+            merged = list(dict.fromkeys(list(st.waiting_for) + list(waiting_for)))
             st.state = State.WAITING
-            st.waiting_for = list(waiting_for)
-            st.waiting_since = self._now()
-            st.waiting_reason = waiting_reason
+            st.waiting_for = merged
+            if not st.waiting_since:
+                st.waiting_since = self._now()
+            st.waiting_reason = waiting_reason or st.waiting_reason
+        elif st.waiting_for:
+            # Агент ответил, но не повторил [WAITING_FOR:] — это НЕ значит что
+            # ожидание закрыто. waiting_for очищается только через
+            # on_waiting_resolved (когда реально пришёл [RESULT:]). Иначе агент
+            # «забывает» что ждёт делегацию и daily reset может его сбросить.
+            st.state = State.WAITING
         else:
             st.state = State.ACTIVE
             st.waiting_for = []
@@ -234,7 +244,7 @@ class SessionManager:
         return st.state in (State.ACTIVE, State.IDLE)
 
     def waiting_stale(self, agent: str, max_hours: int = 24) -> bool:
-        """True если WAITING >24ч — пора эскалировать Саше 'зависло'."""
+        """True если WAITING >24ч — пора эскалировать пользователю 'зависло'."""
         st = self.load(agent)
         if st.state != State.WAITING or not st.waiting_since:
             return False

@@ -1,8 +1,8 @@
 """
 agents_registry.py — конфигурация всех агентов команды.
 
-v9.10.3: загрузка из agents.toml с hot-reload (watchfiles).
-API обратно-совместим: get(), enabled_agents(), AGENTS dict, TOPIC_TO_AGENT.
+Загрузка из agents.toml с hot-reload (watchfiles).
+API: get(), enabled_agents(), AGENTS dict, TOPIC_TO_AGENT.
 """
 
 from __future__ import annotations

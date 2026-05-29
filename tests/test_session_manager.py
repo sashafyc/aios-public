@@ -75,6 +75,32 @@ def test_result_resolves_waiting(tmp_path):
     assert st.waiting_for == []
 
 
+def test_waiting_preserved_when_tag_not_repeated(tmp_path):
+    # Агент ушёл в WAITING, затем получил сообщение и ответил БЕЗ [WAITING_FOR:].
+    # waiting_for НЕ должен обнулиться — иначе агент «забудет» что ждёт делегацию.
+    sm = _sm(tmp_path)
+    sm.on_incoming_message("tasks")
+    sm.on_response("tasks", waiting_for=["research:base-x"])
+    sm.on_incoming_message("tasks")          # промежуточное сообщение
+    st = sm.on_response("tasks")             # ответ без повтора тега
+    assert st.state == State.WAITING
+    assert st.waiting_for == ["research:base-x"]
+    # очищается только через resolve
+    st = sm.on_waiting_resolved("tasks", "research:base-x")
+    assert st.state == State.ACTIVE
+    assert st.waiting_for == []
+
+
+def test_waiting_for_merges_new_keys(tmp_path):
+    # Новая делегация добавляется к уже открытым, без потери старых и без дублей.
+    sm = _sm(tmp_path)
+    sm.on_incoming_message("tasks")
+    sm.on_response("tasks", waiting_for=["research:x"])
+    st = sm.on_response("tasks", waiting_for=["scout:y", "research:x"])
+    assert st.state == State.WAITING
+    assert st.waiting_for == ["research:x", "scout:y"]
+
+
 def test_needs_compact_only_in_active(tmp_path):
     sm = _sm(tmp_path)
     sm.on_incoming_message("tasks")

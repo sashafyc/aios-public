@@ -26,7 +26,7 @@ log = logging.getLogger("bridge.stream_editor")
 DEBOUNCE_MS = 2500
 # Лимит символов для одного TG-сообщения. Запас от 4096:
 # - HTML-теги после format_for_telegram могут раздуть длину (**x** → <b>x</b>).
-# - Поэтому 3500, а не 3800 как было до v9.2.1.
+# - Поэтому 3500, а не 3800 как было до .
 CHUNK_LIMIT = 3500
 
 
@@ -114,9 +114,9 @@ class TgStreamEditor:
         Финальный edit с очищенным текстом (без тегов делегаций).
         Вызывается после router.handle().
 
-        v9.2.1: split на N сообщений если clean_text > CHUNK_LIMIT.
-        Старая версия слайсила clean_text по offset'у raw-текста (некорректно
-        когда теги вырезаются разной длины), плюс не дробила вообще — финальный
+        Split на N сообщений если clean_text > CHUNK_LIMIT (предыдущая
+        реализация слайсила по offset'у raw-текста — некорректно когда теги
+        вырезаются разной длины — и не дробила вообще, из-за чего финальный
         edit падал MESSAGE_TOO_LONG, ничего в TG не показывалось.
         """
         await self._cancel_pending_edit()
@@ -135,7 +135,7 @@ class TgStreamEditor:
         if not chunks:
             return
 
-        # Если ещё не было сообщения (необычно — обычно push() уже сделал send_new)
+        # Если ещё не было сообщения (необычно — обычно push уже сделал send_new)
         # — просто шлём все чанки новыми send_message.
         if self._msg_id is None:
             for chunk in chunks:
@@ -226,7 +226,7 @@ class TgStreamEditor:
             exc_str = str(exc)
             if "not modified" in exc_str.lower():
                 return
-            # v9.2.1: safety net — если всё же поймали MESSAGE_TOO_LONG,
+            # safety net — если всё же поймали MESSAGE_TOO_LONG,
             # обрезаем до CHUNK_LIMIT и шлём plain. Лучше потерять хвост,
             # чем оставить пустое сообщение.
             if "message_too_long" in exc_str.lower() or "MESSAGE_TOO_LONG" in exc_str:

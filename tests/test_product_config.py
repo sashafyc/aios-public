@@ -69,16 +69,32 @@ def test_sysadmin_settings_allows_env():
     import json
     bridge = Path(__file__).resolve().parents[1] / "bridge"
     sa = json.loads((bridge / "settings-sysadmin.json").read_text())
-    blocked = sa["permissions"]["blockedPaths"]
-    assert not any(".env" in p for p in blocked), "Сисадмин должен иметь доступ к .env"
+    deny = sa["permissions"]["deny"]
+    assert not any(".env" in p for p in deny), "Сисадмин должен иметь доступ к .env"
 
 
 def test_default_settings_blocks_env():
     import json
     bridge = Path(__file__).resolve().parents[1] / "bridge"
     base = json.loads((bridge / "settings.json").read_text())
-    blocked = base["permissions"]["blockedPaths"]
-    assert any(".env" in p for p in blocked), "Обычные агенты НЕ должны читать .env"
+    deny = base["permissions"]["deny"]
+    assert any(".env" in p for p in deny), "Обычные агенты НЕ должны читать .env"
+
+
+def test_settings_use_native_claude_schema():
+    """settings.json должен быть в родном формате Claude Code (permissions.deny
+    с tool-паттернами), иначе deny-правила молча игнорируются под bypass."""
+    import json
+    bridge = Path(__file__).resolve().parents[1] / "bridge"
+    for fname in ("settings.json", "settings-sysadmin.json"):
+        cfg = json.loads((bridge / fname).read_text())
+        perms = cfg["permissions"]
+        assert "deny" in perms, f"{fname}: нет permissions.deny"
+        # старые кастомные ключи (молча игнорировались Claude) не должны вернуться
+        for legacy in ("blockedCommands", "blockedPaths", "bypass", "requireApproval"):
+            assert legacy not in perms, f"{fname}: устаревший ключ {legacy} не распознаётся Claude"
+        # rm -rf должен быть в стоп-листе
+        assert any("rm -rf" in d for d in perms["deny"]), f"{fname}: rm -rf не заблокирован"
 
 
 # ───────── база знаний, онбординг, протоколы ─────────

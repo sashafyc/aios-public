@@ -49,10 +49,44 @@ class DeepSeekRunner(AgentRunner):
         self._history: list[dict] = []
         self._system_prompt: Optional[str] = None
         self._last_session_id: Optional[str] = None
+        # DeepSeek — API-runner: история живёт в памяти, поэтому при рестарте
+        # моста контекст терялся (хотя в .state оставался session_id). Персистим
+        # историю в JSONL рядом с агентом и подгружаем на старте.
+        self._history_path = self.workdir / ".deepseek_history.jsonl"
 
         claude_md = self.workdir / "CLAUDE.md"
         if claude_md.exists():
             self._system_prompt = claude_md.read_text()[:8000]
+
+        self._load_history()
+
+    def _load_history(self) -> None:
+        """Подгрузить историю диалога с диска (после рестарта моста)."""
+        if not self._history_path.exists():
+            return
+        try:
+            loaded: list[dict] = []
+            for line in self._history_path.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if line:
+                    loaded.append(json.loads(line))
+            self._history = loaded
+            log.info("[%s] deepseek history restored: %d messages", self.name, len(loaded))
+        except Exception:
+            log.exception("[%s] failed to load deepseek history — starting fresh", self.name)
+            self._history = []
+
+    def _save_history(self) -> None:
+        """Атомарно сохранить историю в JSONL (rewrite — история ограничена)."""
+        try:
+            self._history_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self._history_path.with_suffix(".jsonl.tmp")
+            with open(tmp, "w", encoding="utf-8") as f:
+                for m in self._history:
+                    f.write(json.dumps(m, ensure_ascii=False) + "\n")
+            os.replace(tmp, self._history_path)
+        except Exception:
+            log.exception("[%s] failed to persist deepseek history", self.name)
 
     def _get_api_key(self) -> str:
         key = os.environ.get("DEEPSEEK_API_KEY", "")
@@ -123,7 +157,7 @@ class DeepSeekRunner(AgentRunner):
         return RunResult(text=text[:16000], usage=usage, cost_usd=cost, duration_ms=duration_ms)
 
     async def run(self, message: str, *, resume: bool = True, session_id: Optional[str] = None) -> RunResult:
-        # v9.8: sanitize prompt
+        # sanitize prompt
         if message and message.lstrip().startswith("-"):
             message = " " + message
         if session_id is None:
@@ -138,6 +172,7 @@ class DeepSeekRunner(AgentRunner):
             self._history.append({"role": "user", "content": message})
             self._history.append({"role": "assistant", "content": result.text})
             self._trim_history()
+            self._save_history()
             if not self._last_session_id:
                 self._last_session_id = f"ds-{self.name}-{int(time.time())}"
             result.session_id = self._last_session_id
@@ -234,6 +269,7 @@ class DeepSeekRunner(AgentRunner):
         self._history.append({"role": "user", "content": message})
         self._history.append({"role": "assistant", "content": text_final})
         self._trim_history()
+        self._save_history()
         if not self._last_session_id:
             self._last_session_id = f"ds-{self.name}-{int(time.time())}"
 
@@ -261,10 +297,15 @@ class DeepSeekRunner(AgentRunner):
     async def compact(self, *, session_id: Optional[str] = None) -> None:
         if len(self._history) > 10:
             self._history = self._history[-10:]
+            self._save_history()
 
     async def reset(self) -> None:
         self._history = []
         self._last_session_id = None
+        try:
+            self._history_path.unlink(missing_ok=True)
+        except Exception:
+            log.exception("[%s] failed to remove deepseek history on reset", self.name)
 
     async def close(self) -> None:
         self._history = []

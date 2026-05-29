@@ -1,7 +1,7 @@
 """
 rate_guard.py — cross-session rate limit + auth error coordination.
 
-v9.10.7: два режима блокировки:
+Два режима блокировки:
   - rate_limit: provider заблочен на retry_after_s, fallback на другой provider
   - auth_error: provider заблочен на 1 час, fallback + предупреждение
 

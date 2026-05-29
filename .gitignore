@@ -9,6 +9,9 @@ bridge/.bridge.lock
 bridge/.rate_limits.json
 bridge/queue/
 **/.state
+# История диалога DeepSeek-агентов (персист между рестартами)
+**/.deepseek_history.jsonl
+**/.deepseek_history.jsonl.tmp
 
 # Логи и рабочие файлы
 logs/
@@ -18,6 +21,9 @@ workspace/permanent/*
 
 # Архивы контекста агентов
 agents/**/context_archive/
+
+# Бэкапы обновлений (scripts/update.sh)
+.backups/
 
 # Python
 __pycache__/

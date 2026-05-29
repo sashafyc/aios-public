@@ -1,15 +1,11 @@
 """
 claude_runner.py — запуск Claude Code CLI как раннера агента.
 
-Две реализации общего интерфейса AgentRunner:
+Реализация общего интерфейса AgentRunner:
 
-  1. SubprocessRunner — на каждое сообщение вызывает `claude -p … --resume`.
-     Простой, надёжный старт. Кэш жив пока cacheRetention=long (до 1 часа).
-     Поддерживает streaming через run_streaming() (stream-json + partial messages).
-
-  2. PTYRunner — держит long-running процесс через pexpect + pseudo-terminal.
-     Cache hit ~90%. Сложнее в реализации, используется как фаза 2 оптимизации.
-     На старте оставлен как скелет с NotImplementedError в hot-path'ах.
+  SubprocessRunner — на каждое сообщение вызывает `claude -p … --resume`.
+  Простой, надёжный. Кэш жив пока cacheRetention=long (до 1 часа).
+  Поддерживает streaming через run_streaming() (stream-json + partial messages).
 
 Почему subprocess: `claude -p --resume` — простой и официально поддерживаемый
 способ программно использовать Claude CLI (включая подписку), без отдельного SDK.
@@ -36,7 +32,7 @@ from typing import AsyncGenerator, Optional
 log = logging.getLogger("bridge.claude_runner")
 
 
-# Путь к settings.json (permissions/blockedCommands) — рядом с этим файлом в bridge/.
+# Путь к settings.json (нативные permissions deny/ask) — рядом с этим файлом в bridge/.
 SETTINGS_PATH = str(Path(__file__).resolve().parent / "settings.json")
 
 
@@ -48,7 +44,7 @@ class RunResult:
     cost_usd: float = 0.0
     duration_ms: int = 0
     error: Optional[str] = None
-    is_truncated: bool = False            # v9.9: True если ответ обрезан по output limit
+    is_truncated: bool = False            # True если ответ обрезан по output limit
 
 
 @dataclass
@@ -62,7 +58,7 @@ class StreamEvent:
 
 
 class AgentRunner(ABC):
-    """Общий интерфейс. Реализации: SubprocessRunner, PTYRunner."""
+    """Общий интерфейс раннера агента. Реализация: SubprocessRunner."""
 
     @abstractmethod
     async def run(
@@ -94,10 +90,10 @@ class AgentRunner(ABC):
 
     @abstractmethod
     async def close(self) -> None:
-        """Освободить ресурсы (для PTY). No-op для subprocess."""
+        """Освободить ресурсы. No-op для subprocess."""
 
 
-# v9.9: iteration budget — максимальное число tool calls в одном run.
+# iteration budget — максимальное число tool calls в одном run.
 # Предотвращает runaway agents (бесконечные циклы web_search → fail → retry).
 # Default: 90 для обычных, 50 для isolated (cron). Env-override: TOOL_BUDGET.
 TOOL_BUDGET = int(os.getenv("TOOL_BUDGET", "90"))
@@ -143,7 +139,7 @@ class SubprocessRunner(AgentRunner):
     @staticmethod
     def _sanitize_prompt(message: str) -> str:
         """
-        v9.8: защита от edge cases когда CLI интерпретирует промпт как флаг.
+        Защита от edge cases когда CLI интерпретирует промпт как флаг.
         - Начинается с '-' → добавить пробел (не будет считаться аргументом).
         - Чисто числовой → добавить точку (некоторые CLI интерпретируют как ID).
         """
@@ -349,7 +345,7 @@ class SubprocessRunner(AgentRunner):
                         tool_count += 1
                         tool_name = block.get("name", "unknown")
                         tool_id = block.get("id", "")
-                        # v9.9: iteration budget — kill process if too many tool calls
+                        # iteration budget — kill process if too many tool calls
                         if tool_count > budget:
                             log.warning(
                                 "[%s] tool budget exhausted (%d/%d), killing process",
@@ -526,7 +522,7 @@ class SubprocessRunner(AgentRunner):
         usage = data.get("usage") or {}
         session_id = data.get("session_id") or data.get("id")
         cost = float(data.get("cost_usd") or data.get("total_cost_usd") or 0.0)
-        # v9.9: detect truncation (stop_reason=max_tokens or explicit is_truncated)
+        # detect truncation (stop_reason=max_tokens or explicit is_truncated)
         stop_reason = data.get("stop_reason") or data.get("finish_reason") or ""
         truncated = stop_reason == "max_tokens" or bool(data.get("is_truncated"))
 
@@ -566,84 +562,3 @@ class SubprocessRunner(AgentRunner):
 
     async def close(self) -> None:
         pass
-
-
-# ─────────────────────────────── PTY (фаза 2) ───────────────────────────────
-
-
-class PTYRunner(AgentRunner):
-    """
-    Long-running процесс `claude` через pexpect + pseudo-terminal.
-    Cache hit ~90%, conversation history в памяти процесса.
-
-    СТАТУС: скелет. На старте bridge использует SubprocessRunner.
-    Реализация ― фаза оптимизации после снятия метрик.
-    """
-
-    def __init__(self, name: str, workdir: Path, *, model: Optional[str] = None):
-        self.name = name
-        self.workdir = Path(workdir)
-        self.model = model
-        self._child = None  # pexpect.spawn
-
-    async def _ensure_started(self) -> None:
-        if self._child is not None:
-            return
-        try:
-            import pexpect  # noqa: F401
-        except ImportError as exc:
-            raise RuntimeError("PTYRunner требует pexpect (pip install pexpect)") from exc
-        # TODO(phase2): pexpect.spawn("claude --output-format stream-json", cwd=self.workdir)
-        # + read_until_turn_end parser + sync по prompt-маркеру.
-        raise NotImplementedError("PTYRunner is phase-2; use SubprocessRunner on start")
-
-    async def run(
-        self,
-        message: str,
-        *,
-        resume: bool = True,
-        session_id: Optional[str] = None,
-    ) -> RunResult:
-        await self._ensure_started()
-        raise NotImplementedError
-
-    async def run_isolated(self, message: str) -> RunResult:
-        # В PTY-модели isolated бессмыслен (весь PTY — это переиспользование
-        # процесса). Для cron-триггеров используем SubprocessRunner.run_isolated.
-        raise NotImplementedError("use SubprocessRunner.run_isolated for cron triggers")
-
-    async def compact(self, *, session_id: Optional[str] = None) -> None:
-        raise NotImplementedError
-
-    async def reset(self) -> None:
-        raise NotImplementedError
-
-    async def close(self) -> None:
-        if self._child is not None:
-            try:
-                self._child.close(force=True)
-            except Exception:
-                pass
-            self._child = None
-
-
-# ─────────────────────────────── factory ───────────────────────────────
-
-
-def make_runner(
-    kind: str,
-    name: str,
-    workdir: Path,
-    *,
-    model: Optional[str] = None,
-) -> AgentRunner:
-    """
-    Фабрика ― возвращает нужную реализацию по конфигу.
-        kind ∈ {"subprocess", "pty"}
-    """
-    kind = kind.lower()
-    if kind == "subprocess":
-        return SubprocessRunner(name, workdir, model=model)
-    if kind == "pty":
-        return PTYRunner(name, workdir, model=model)
-    raise ValueError(f"unknown runner kind: {kind!r}")

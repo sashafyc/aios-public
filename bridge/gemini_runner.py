@@ -83,7 +83,7 @@ class GeminiSubprocessRunner(AgentRunner):
         resume: bool = True,
         session_id: Optional[str] = None,
     ) -> RunResult:
-        # v9.8: sanitize prompt
+        # sanitize prompt
         if message and message.lstrip().startswith("-"):
             message = " " + message
         # session_id is None → cold start (после /new или daily reset SessionManager).
@@ -239,7 +239,7 @@ class GeminiSubprocessRunner(AgentRunner):
 
     async def reset(self) -> None:
         # Поведение reset для gemini обеспечивается через session_id=None от bridge:
-        # после `sessions.on_reset_to_idle()` SessionManager отдаёт None → run() идёт
+        # после `sessions.on_reset_to_idle` SessionManager отдаёт None → run идёт
         # без --resume → cold start. Эта функция нужна только для совместимости
         # с AgentRunner интерфейсом и для ручного вызова из cron-триггеров.
         self._last_session_id = None

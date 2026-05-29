@@ -1,6 +1,6 @@
 ---
 name: pdf
-description: "Работа с PDF файлами: чтение, извлечение текста/таблиц, объединение, разделение, создание новых PDF (reportlab), конвертация HTML→PDF (weasyprint), OCR сканов, заполнение форм. Используй когда пользователь упоминает .pdf файл, хочет создать/прочитать/объединить PDF, сделать PDF из HTML, извлечь данные из PDF."
+description: "Работа с PDF файлами: чтение, извлечение текста/таблиц, объединение, разделение, создание новых PDF (reportlab), конвертация HTML→PDF (Puppeteer / Chrome headless), OCR сканов. Используй когда пользователь упоминает .pdf файл, хочет создать/прочитать/объединить PDF, сделать PDF из HTML, извлечь данные из PDF."
 ---
 
 # PDF Processing Guide
@@ -8,13 +8,19 @@ description: "Работа с PDF файлами: чтение, извлечен
 ## Python environment
 
 Запускай скрипты через **`$AIOS_ROOT/.venv/bin/python`** — там предустановлены `pypdf`, `reportlab`, `pdfplumber`.
-Для HTML→PDF (`weasyprint`) или OCR (`pytesseract`) — это тяжёлые зависимости, ставь по необходимости:
-`$AIOS_ROOT/.venv/bin/pip install weasyprint` (нужны системные cairo/pango).
+Для OCR (`pytesseract`) — тяжёлая зависимость, ставь по необходимости.
 Готовый PDF отправляй пользователю тегом `[FILE:/path]`.
+
+> **НОТА: HTML→PDF требует Node.js + puppeteer** (тянет Chromium ~150MB).
+> Установка: `npm install -g puppeteer` или локально (`npm install puppeteer`).
+> На сервере: проверь что Chromium-зависимости стоят (`apt install -y chromium-browser`,
+> либо puppeteer сам качает Chromium при установке).
+> Если Node/puppeteer нет — для простых PDF из текста используй reportlab
+> (Python, без внешних зависимостей).
 
 ## Overview
 
-This guide covers essential PDF processing operations using Python libraries and command-line tools. For advanced features, JavaScript libraries, and detailed examples, see REFERENCE.md. If you need to fill out a PDF form, read FORMS.md and follow its instructions.
+This guide covers essential PDF processing operations using Python libraries and command-line tools. For advanced features, JavaScript libraries, and detailed examples, see REFERENCE.md.
 
 ## Quick Start
 
@@ -299,27 +305,19 @@ with open("encrypted.pdf", "wb") as output:
     writer.write(output)
 ```
 
-### weasyprint - HTML to PDF
+### HTML to PDF (Puppeteer)
 
-Use weasyprint when you need to convert an existing HTML file (with CSS, images, dark themes) to PDF. This is the preferred method for styled documents like commercial proposals (КП), reports with custom design, etc.
+Используй Puppeteer (Chrome headless) когда нужно конвертировать готовый HTML-файл (с CSS, шрифтами, картинками, тёмной темой) в PDF. Это предпочтительный способ для стилизованных документов: КП, лендингов, отчётов с кастомным дизайном. Chrome рендерит точно как браузер — корректно подтягивает Google Fonts, CSS-градиенты, base64-картинки.
 
-```python
-import weasyprint
-
-# From HTML file
-weasyprint.HTML(filename="document.html").write_pdf("output.pdf")
-
-# From HTML string
-html_content = "<html><body><h1>Report</h1></body></html>"
-weasyprint.HTML(string=html_content).write_pdf("output.pdf")
-
-# From URL
-weasyprint.HTML(url="https://example.com/report").write_pdf("output.pdf")
+```bash
+node $AIOS_ROOT/skills/pdf/scripts/html_to_pdf.js <input.html> [output.pdf] [--a4]
 ```
 
-**When to use weasyprint vs reportlab:**
-- **weasyprint** — converting HTML/CSS to PDF (styled documents, templates, dark themes, base64 images)
-- **reportlab** — creating PDFs programmatically from scratch (tables, charts, simple reports)
+- **По умолчанию** (без флага) — одна длинная страница (ширина A4 = 794px, высота = высота контента, без разрывов). Подходит для КП, лендингов и стилизованных доков с тёмной темой / base64-картинками: PDF получается как непрерывный скролл-сайт.
+- **`--a4`** — обычная A4-пагинация с полями (для классических многостраничных документов).
+- Если `output.pdf` не указан — рядом с входным файлом создаётся `<имя>.pdf`.
+
+**ВАЖНО: НЕ используй `@media print` в CSS** — он ломает тёмную тему и фон (Chrome в печати применяет другие правила). `printBackground: true` в скрипте уже включён, фоны рендерятся как на экране.
 
 ## Quick Reference
 
@@ -330,14 +328,12 @@ weasyprint.HTML(url="https://example.com/report").write_pdf("output.pdf")
 | Extract text | pdfplumber | `page.extract_text()` |
 | Extract tables | pdfplumber | `page.extract_tables()` |
 | Create PDFs from scratch | reportlab | Canvas or Platypus |
-| **HTML/CSS to PDF** | **weasyprint** | `HTML(filename=...).write_pdf(...)` |
+| **HTML/CSS to PDF** | **Puppeteer** | `node scripts/html_to_pdf.js in.html [out.pdf] [--a4]` |
 | Command line merge | qpdf | `qpdf --empty --pages ...` |
 | OCR scanned PDFs | pytesseract | Convert to image first |
-| Fill PDF forms | pdf-lib or pypdf (see FORMS.md) | See FORMS.md |
 
 ## Next Steps
 
 - For advanced pypdfium2 usage, see REFERENCE.md
 - For JavaScript libraries (pdf-lib), see REFERENCE.md
-- If you need to fill out a PDF form, follow the instructions in FORMS.md
 - For troubleshooting guides, see REFERENCE.md

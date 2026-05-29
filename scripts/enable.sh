@@ -101,15 +101,16 @@ EOF
     echo "   Логи:        tail -f $AIOS_ROOT/logs/bridge/service.log"
 }
 
-# ───────── cron: watchdog ─────────
-enable_watchdog() {
-    b "Добавляю watchdog в cron (каждые 5 минут)"
-    local line="*/5 * * * * AIOS_ROOT=$AIOS_ROOT bash $AIOS_ROOT/scripts/monitoring/bridge-watchdog.sh"
-    if crontab -l 2>/dev/null | grep -qF "bridge-watchdog.sh"; then
-        ok "watchdog уже в cron"
+# ───────── cron: единое расписание ─────────
+sync_cron() {
+    b "Применяю единое расписание (scripts/crontab → crontab)"
+    # Все cron-задачи (watchdog, doctor, чистка, проверка обновлений, задачи
+    # агентов) живут в одном манифесте scripts/crontab. cron-sync ставит их
+    # в управляемый блок crontab, не трогая чужие строки.
+    if bash "$AIOS_ROOT/scripts/cron-sync.sh"; then
+        ok "расписание применено (правь scripts/crontab, затем bash scripts/cron-sync.sh)"
     else
-        ( crontab -l 2>/dev/null; echo "$line" ) | crontab -
-        ok "watchdog добавлен в cron"
+        echo "   (cron недоступен — расписание пропущено)"
     fi
 }
 
@@ -119,6 +120,7 @@ case "$(uname -s)" in
     Darwin) enable_launchd ;;
     *) echo "❌ Неподдерживаемая ОС для автозапуска"; exit 1 ;;
 esac
-enable_watchdog 2>/dev/null || echo "   (cron недоступен — watchdog пропущен)"
+sync_cron
 echo ""
 echo "Готово. Мост работает в фоне."
+echo "Всё расписание проекта — в одном файле: scripts/crontab (применить: bash scripts/cron-sync.sh)"
