@@ -48,6 +48,22 @@ EOF
     $sudo systemctl daemon-reload
     $sudo systemctl enable --now aios-bridge.service
     ok "systemd: aios-bridge запущен и добавлен в автозапуск"
+
+    # Узкое sudoers-правило: сервисный юзер может рестартить ТОЛЬКО aios-bridge
+    # без пароля. Нужно чтобы Сисадмин мог перезапускать мост после правки .env.
+    local sysctl_bin; sysctl_bin="$(command -v systemctl || echo /usr/bin/systemctl)"
+    local sudoers=/etc/sudoers.d/aios-bridge
+    if [[ "$(id -u)" == "0" || -n "$sudo" ]]; then
+        echo "$svc_user ALL=(root) NOPASSWD: $sysctl_bin restart aios-bridge, $sysctl_bin restart aios-bridge.service" \
+            | $sudo tee "$sudoers" >/dev/null
+        $sudo chmod 440 "$sudoers"
+        # валидация синтаксиса sudoers (откат если сломали)
+        if $sudo visudo -cf "$sudoers" >/dev/null 2>&1; then
+            ok "sudoers: $svc_user может рестартить мост (sudo systemctl restart aios-bridge)"
+        else
+            $sudo rm -f "$sudoers"; warn "sudoers-правило не прошло валидацию — пропущено"
+        fi
+    fi
     echo "   Статус:  systemctl status aios-bridge"
     echo "   Логи:    journalctl -u aios-bridge -f"
 }

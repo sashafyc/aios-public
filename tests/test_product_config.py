@@ -47,3 +47,35 @@ def test_workdirs_under_root():
     root = r.AIOS_ROOT
     for a in r.enabled_agents():
         assert str(a.workdir).startswith(str(root))
+
+
+# ───────── модель прав (аудит Сисадмина) ─────────
+
+def test_sysadmin_has_privileged_settings():
+    sp = r.get("sysadmin").settings_path
+    assert sp is not None
+    assert sp.startswith("/")                       # абсолютный (cwd агента ≠ корень)
+    assert sp.endswith("settings-sysadmin.json")
+    assert Path(sp).exists()
+
+
+def test_other_agents_use_default_settings():
+    # Ассистент и Скрайбер не должны иметь привилегированный settings
+    assert r.get("assistant").settings_path is None
+    assert r.get("scriber").settings_path is None
+
+
+def test_sysadmin_settings_allows_env():
+    import json
+    bridge = Path(__file__).resolve().parents[1] / "bridge"
+    sa = json.loads((bridge / "settings-sysadmin.json").read_text())
+    blocked = sa["permissions"]["blockedPaths"]
+    assert not any(".env" in p for p in blocked), "Сисадмин должен иметь доступ к .env"
+
+
+def test_default_settings_blocks_env():
+    import json
+    bridge = Path(__file__).resolve().parents[1] / "bridge"
+    base = json.loads((bridge / "settings.json").read_text())
+    blocked = base["permissions"]["blockedPaths"]
+    assert any(".env" in p for p in blocked), "Обычные агенты НЕ должны читать .env"

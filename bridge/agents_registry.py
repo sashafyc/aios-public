@@ -71,6 +71,12 @@ def _load_toml() -> dict[str, AgentConfig]:
         workdir_rel = cfg.get("workdir", f"agents/{name}")
         workdir = root / workdir_rel if not workdir_rel.startswith("/") else Path(workdir_rel)
 
+        # settings_path: относительный → резолвим от корня в абсолютный
+        # (агент запускается с cwd=workdir, поэтому --settings нужен абсолютным)
+        sp = cfg.get("settings_path")
+        if sp and not sp.startswith("/"):
+            sp = str(root / sp)
+
         agents[name] = AgentConfig(
             name=name,
             display_name=cfg.get("display_name", name),
@@ -90,7 +96,7 @@ def _load_toml() -> dict[str, AgentConfig]:
             chat_id=cfg.get("chat_id"),
             timeout_s=cfg.get("timeout_s", 1800),
             run_as_user=cfg.get("run_as_user"),
-            settings_path=cfg.get("settings_path"),
+            settings_path=sp,
             extra_chat_ids=cfg.get("extra_chat_ids"),
         )
 

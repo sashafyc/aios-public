@@ -318,10 +318,12 @@ EOF
     _gen_agents_toml "$bridge/agents.toml"
     ok "agents.toml создан (3 агента)"
 
-    # settings.json — подставляем путь
-    sed "s|__AIOS_ROOT__|$INSTALL_DIR|g" "$bridge/settings.json" > "$bridge/settings.json.tmp" \
-        && mv "$bridge/settings.json.tmp" "$bridge/settings.json"
-    ok "settings.json (permissions) настроен"
+    # settings*.json — подставляем путь установки в плейсхолдеры
+    for sf in settings.json settings-sysadmin.json; do
+        [[ -f "$bridge/$sf" ]] || continue
+        sed "s|__AIOS_ROOT__|$INSTALL_DIR|g" "$bridge/$sf" > "$bridge/$sf.tmp" && mv "$bridge/$sf.tmp" "$bridge/$sf"
+    done
+    ok "settings.json + settings-sysadmin.json (permissions) настроены"
 
     # директории
     mkdir -p "$INSTALL_DIR/logs/bridge" "$bridge/queue" \
@@ -377,6 +379,7 @@ runner_type = "$RUNNER"
 role = "Управление системой через диалог: агенты, runner'ы, API, здоровье."
 stream = $RUNNER_STREAM
 timeout_s = 7200
+settings_path = "bridge/settings-sysadmin.json"
 
 [agents.scriber]
 display_name = "Скрайбер"

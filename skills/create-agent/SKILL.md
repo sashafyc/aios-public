@@ -64,7 +64,9 @@ description: Создание нового агента в системе (дл�
 
 ## Технические шаги (общие)
 
-1. **Папка:** `agents/<name>/` (name — латиницей, lowercase, без пробелов: researcher, cook, marketer).
+> Все пути — от `$AIOS_ROOT` (твой cwd = `agents/sysadmin/`, не корень!). Проверь: `echo $AIOS_ROOT`.
+
+1. **Папка:** `$AIOS_ROOT/agents/<name>/` (name — латиницей, lowercase, без пробелов: researcher, cook, marketer).
 
 2. **CLAUDE.md** — структурированный, НЕ перегруженный. Секции:
    - `# <Имя> — <роль>` + топик
@@ -76,16 +78,16 @@ description: Создание нового агента в системе (дл�
    - Если импорт — добавь секцию `## Контекст` с фактами из исходного агента
    Бери за основу `agents/_template/CLAUDE.md`.
 
-3. **context.md и journal.md** — скопируй из `agents/_template/`, подставь имя. Если импорт — заполни «📌 Постоянное» и «🧠 Выученное» фактами.
+3. **context.md и journal.md** — скопируй из `$AIOS_ROOT/agents/_template/`, подставь имя. Если импорт — заполни «📌 Постоянное» и «🧠 Выученное» фактами.
 
 4. **Симлинки** (для Codex/Gemini):
    ```bash
-   cd agents/<name>
+   cd "$AIOS_ROOT/agents/<name>"
    ln -sf CLAUDE.md AGENTS.md
    ln -sf CLAUDE.md GEMINI.md
    ```
 
-5. **agents.toml** — добавь секцию:
+5. **`$AIOS_ROOT/bridge/agents.toml`** — добавь секцию:
    ```toml
    [agents.<name>]
    display_name = "<Имя>"
@@ -99,7 +101,7 @@ description: Создание нового агента в системе (дл�
    ```
    Hot-reload подхватит за 60 сек — рестарт не нужен.
 
-6. **Проверь:** `python3 bridge/doctor.py` — агент должен появиться без warning.
+6. **Проверь:** `$AIOS_ROOT/.venv/bin/python $AIOS_ROOT/bridge/doctor.py` — агент должен появиться без warning.
 
 7. **Предложи делегацию:** «Хочешь чтобы Ассистент мог делегировать задачи этому агенту? Добавлю в can_delegate_to».
 
