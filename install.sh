@@ -201,7 +201,11 @@ EOF
     → Добавь в группу бота @raw_data_bot (или @getidsbot)
     → Он пришлёт JSON, найди "chat_id": -100XXXXXXXXXX
 EOF
-    ask " ID группы (-100...): " GROUP_CHAT_ID
+    while :; do
+        ask " ID группы (-100...): " GROUP_CHAT_ID
+        [[ "$GROUP_CHAT_ID" =~ ^-100[0-9]+$ ]] && break
+        err "ID группы должен быть вида -100XXXXXXXXXX. Ещё раз."
+    done
 
     cat > /dev/tty <<'EOF'
 
@@ -209,9 +213,17 @@ EOF
     → Напиши сообщение в топик, перешли его @raw_data_bot
     → В ответе найди "message_thread_id"
 EOF
-    ask " topic_id для 💬 Ассистент: " TOPIC_ASSISTANT
-    ask " topic_id для ⚙️ Система: "   TOPIC_SYSADMIN
-    ask " topic_id для 🎙 Скрайбер: "  TOPIC_SCRIBER
+    _ask_topic() {  # _ask_topic "prompt" VARNAME
+        local v
+        while :; do
+            ask "$1" v
+            if [[ "$v" =~ ^[0-9]+$ ]]; then printf -v "$2" '%s' "$v"; return; fi
+            err "topic_id — это число. Ещё раз."
+        done
+    }
+    _ask_topic " topic_id для 💬 Ассистент: " TOPIC_ASSISTANT
+    _ask_topic " topic_id для ⚙️ Система: "   TOPIC_SYSADMIN
+    _ask_topic " topic_id для 🎙 Скрайбер: "  TOPIC_SCRIBER
     ok "Группа: $GROUP_CHAT_ID (топики: $TOPIC_ASSISTANT/$TOPIC_SYSADMIN/$TOPIC_SCRIBER)"
 }
 
@@ -224,7 +236,12 @@ step_bot() {
     2. Придумай имя и username (...bot)
     3. BotFather пришлёт токен (длинная строка с двоеточием)
 EOF
-    ask " Токен бота: " BOT_TOKEN
+    while :; do
+        ask " Токен бота: " BOT_TOKEN
+        # формат BotFather: <digits>:<35+ alnum/_/->
+        [[ "$BOT_TOKEN" =~ ^[0-9]+:[A-Za-z0-9_-]{30,}$ ]] && break
+        err "Похоже это не токен (формат 123456789:AA...). Скопируй целиком от @BotFather."
+    done
     cat > /dev/tty <<'EOF'
 
     Настрой бота у @BotFather:
@@ -325,15 +342,20 @@ EOF
 _write_pkg_sudoers() {
     [[ "$ALLOW_PKG" == "yes" && "$OS" != "mac" ]] || return 0
     local sudo=""; [[ "$(id -u)" != "0" ]] && sudo="sudo"
-    local pm_path rule
-    if   command -v apt-get >/dev/null 2>&1; then pm_path="$(command -v apt-get)"; rule="$pm_path update, $pm_path install -y *, $pm_path install *"
-    elif command -v dnf     >/dev/null 2>&1; then pm_path="$(command -v dnf)";     rule="$pm_path install -y *, $pm_path install *"
+    # Узкий allowlist реально полезных пакетов (НЕ wildcard '*', чтобы apt install
+    # произвольного пакета не стал каналом эскалации до root).
+    local pkgs="ffmpeg tesseract-ocr poppler-utils imagemagick pandoc libreoffice-impress libreoffice-calc"
+    local pm_path rule=""
+    if   command -v apt-get >/dev/null 2>&1; then pm_path="$(command -v apt-get)"
+    elif command -v dnf     >/dev/null 2>&1; then pm_path="$(command -v dnf)"
     else return 0; fi
+    rule="$pm_path update"
+    for p in $pkgs; do rule="$rule, $pm_path install -y $p, $pm_path install $p"; done
     local sudoers=/etc/sudoers.d/aios-pkg
     echo "$RUN_USER ALL=(root) NOPASSWD: $rule" | $sudo tee "$sudoers" >/dev/null 2>&1 || return 0
     $sudo chmod 440 "$sudoers" 2>/dev/null
     if $sudo visudo -cf "$sudoers" >/dev/null 2>&1; then
-        ok "Сисадмину разрешена установка системных пакетов (sudo apt/dnf install)"
+        ok "Сисадмину разрешена установка пакетов из allowlist (ffmpeg, tesseract, poppler, pandoc, libreoffice...)"
     else
         $sudo rm -f "$sudoers"; warn "sudoers для пакетов не прошёл валидацию — пропущено"
     fi
@@ -344,18 +366,20 @@ step_generate() {
     b " Шаг 5: Генерирую конфиги"; hr
     local bridge="$INSTALL_DIR/bridge"
 
-    # .env
-    cat > "$bridge/.env" <<EOF
-BOT_TOKEN=$BOT_TOKEN
-AIOS_GROUP_CHAT_ID=$GROUP_CHAT_ID
-AIOS_ROOT=$INSTALL_DIR
-DEEPSEEK_API_KEY=$DEEPSEEK_API_KEY
-ASSEMBLYAI_API_KEY=$ASSEMBLYAI_API_KEY
-TIMEZONE_OFFSET_HOURS=3
-DAILY_RESET_HOUR=6
-DAILY_RESET_MINUTE=30
-WATCHDOG_TOPIC_ID=$TOPIC_SYSADMIN
-EOF
+    # .env — значения в двойных кавычках (безопасно для путей с пробелами и для
+    # `source .env` в watchdog). Внутренние " и \ экранируем.
+    _envq() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
+    {
+        echo "BOT_TOKEN=\"$(_envq "$BOT_TOKEN")\""
+        echo "AIOS_GROUP_CHAT_ID=\"$(_envq "$GROUP_CHAT_ID")\""
+        echo "AIOS_ROOT=\"$(_envq "$INSTALL_DIR")\""
+        echo "DEEPSEEK_API_KEY=\"$(_envq "$DEEPSEEK_API_KEY")\""
+        echo "ASSEMBLYAI_API_KEY=\"$(_envq "$ASSEMBLYAI_API_KEY")\""
+        echo "TIMEZONE_OFFSET_HOURS=3"
+        echo "DAILY_RESET_HOUR=6"
+        echo "DAILY_RESET_MINUTE=30"
+        echo "WATCHDOG_TOPIC_ID=\"$(_envq "$TOPIC_SYSADMIN")\""
+    } > "$bridge/.env"
     chmod 600 "$bridge/.env"
     ok ".env создан (chmod 600)"
 

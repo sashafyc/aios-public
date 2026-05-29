@@ -11,9 +11,8 @@ claude_runner.py — запуск Claude Code CLI как раннера аген
      Cache hit ~90%. Сложнее в реализации, используется как фаза 2 оптимизации.
      На старте оставлен как скелет с NotImplementedError в hot-path'ах.
 
-Почему subprocess, а не Agent SDK: SDK не работает с Max-подпиской (см. раздел 7
-migration MD). Subprocess `claude -p --resume` — единственный официально
-разрешённый способ использовать Max подписку программно.
+Почему subprocess: `claude -p --resume` — простой и официально поддерживаемый
+способ программно использовать Claude CLI (включая подписку), без отдельного SDK.
 
 Входы: name, workdir, message
 Выходы: RunResult(text, usage, session_id, duration_ms)

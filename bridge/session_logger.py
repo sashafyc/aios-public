@@ -1,5 +1,5 @@
 """
-session_logger.py — usage/cost tracking (Уровень 3, раздел 9 migration MD).
+session_logger.py — usage/cost tracking.
 
 На каждый запуск агента → одна строка JSONL с tokens_in/out/cache_read/cache_write,
 стоимостью и длительностью. Используется для:

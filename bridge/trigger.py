@@ -39,6 +39,11 @@ import sys
 import time
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from env_loader import load_env
+load_env()
+
 from path_config import queue_dir
 
 QUEUE_DIR = queue_dir()

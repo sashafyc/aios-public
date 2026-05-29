@@ -5,8 +5,8 @@ session_manager.py — state machine сессии агента.
 Хранение: .state файл в workdir агента (JSON). Пережимается при рестарте bridge.
 
 Зачем: если агент в WAITING — idle timer отключён, /compact не срабатывает,
-daily reset 06:30 не трогает сессию. Это ключевое правило раздела 4 migration MD:
-WAITING может длиться хоть сутки — это легальное состояние, не зависание.
+daily reset не трогает сессию. Ключевое правило: WAITING может длиться хоть
+сутки — это легальное состояние, не зависание.
 
 Входы: имя агента, события (incoming_message, response_sent, waiting_for, ...)
 Выходы: текущее состояние + решение bridge что делать (compact / reset / пропустить)

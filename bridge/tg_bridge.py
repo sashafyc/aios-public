@@ -36,10 +36,14 @@ from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
 from typing import Optional
 
-# Для любых правок читать: materials/system/39-bridge-versioning.md (мак-репо)
-# Мажор (v9→v10) = архитектурный рефактор + переименование файла
-# Минор (9.0→9.1) = новая фича; патч (9.x.0→9.x.1) = фикс/мелкая правка
-BRIDGE_VERSION = "1.0.0"  # 2026-05-28 v1.0.0 — aios-public
+BRIDGE_VERSION = "1.0.0"  # aios-public
+
+sys.path.insert(0, str(Path(__file__).parent))
+
+# Грузим .env ДО чтения переменных окружения (нужно для ручного запуска и macOS
+# launchd, где нет systemd EnvironmentFile). systemd-переменные имеют приоритет.
+from env_loader import load_env
+load_env()
 
 # Таймзона и время ежедневного сброса сессий — конфигурируется через .env.
 # TIMEZONE_OFFSET_HOURS — смещение от UTC (по умолчанию +3, МСК).
@@ -50,7 +54,14 @@ MSK = LOCAL_TZ  # обратная совместимость с остальн�
 DAILY_RESET_HOUR = int(os.getenv("DAILY_RESET_HOUR", "6"))
 DAILY_RESET_MINUTE = int(os.getenv("DAILY_RESET_MINUTE", "30"))
 
-sys.path.insert(0, str(Path(__file__).parent))
+# Опциональный allowlist пользователей (defense-in-depth). По умолчанию пусто =
+# реагируем на любого участника группы (модель «приватная группа = доверенные»).
+# Задать в .env: ALLOWED_USER_IDS=123,456 — тогда бот слушает только этих юзеров.
+_allowed_raw = os.getenv("ALLOWED_USER_IDS", "").strip()
+ALLOWED_USER_IDS = {
+    int(x) for x in re.split(r"[ ,]+", _allowed_raw)
+    if x.strip().lstrip("-").isdigit()
+} if _allowed_raw else set()
 
 import agents_registry
 from agents_registry import GROUP_CHAT_ID
@@ -73,6 +84,28 @@ import rate_guard
 AIOS_ROOT = aios_root()
 LOG_DIR = bridge_log_dir()
 LOG_DIR.mkdir(parents=True, exist_ok=True)
+
+# Лимиты на входящие файлы (защита от DoS большими/множественными вложениями)
+MAX_INCOMING_FILE_MB = int(os.getenv("MAX_INCOMING_FILE_MB", "20"))   # TG bot API всё равно ~20MB
+MAX_FILES_PER_MESSAGE = int(os.getenv("MAX_FILES_PER_MESSAGE", "10"))
+
+
+def _is_within(path: Path, root: Path) -> bool:
+    """True если path внутри root (надёжно, без ловушек startswith)."""
+    try:
+        return path.is_relative_to(root)
+    except (ValueError, AttributeError):
+        return str(path) == str(root) or str(path).startswith(str(root) + os.sep)
+
+
+def _safe_filename(name: str) -> str:
+    """Обезопасить имя входящего файла: только basename, без traversal, ограничение длины."""
+    base = Path(name or "file").name  # срезает любые / и ..
+    base = re.sub(r"[^\w.\- ()]+", "_", base, flags=re.UNICODE).strip() or "file"
+    if len(base) > 120:
+        stem, dot, ext = base.rpartition(".")
+        base = (stem[:100] + dot + ext[:15]) if dot else base[:120]
+    return base
 
 
 # ────────────────────── logging ──────────────────────
@@ -324,6 +357,14 @@ class Bridge:
                 name=f"worker-{agent_name}",
             )
 
+    def _clear_busy(self, agent_name: str) -> None:
+        """Снять BUSY если оно зависло (ранний выход/исключение до on_response)."""
+        try:
+            if self.sessions.load(agent_name).state == State.BUSY:
+                self.sessions.on_busy(agent_name, False)
+        except Exception:
+            log.exception("[%s] clear_busy failed", agent_name)
+
     async def _agent_worker(self, agent_name: str) -> None:
         """
         Per-agent worker. Гарантирует:
@@ -351,6 +392,8 @@ class Bridge:
                         )
                     except Exception:
                         log.exception("[%s] worker: keepalive run failed", agent_name)
+                    finally:
+                        self._clear_busy(agent_name)
                 continue
 
             # Обычный msg → дебаунс: ловим ещё msg в окне INBOX_DEBOUNCE_S,
@@ -416,6 +459,8 @@ class Bridge:
                     )
                 except Exception:
                     log.exception("[%s] worker: run failed", agent_name)
+                finally:
+                    self._clear_busy(agent_name)
 
                 # Если за время run в очередь упали ещё msg — следующий
                 # цикл while их подхватит и склеит как next turn (--resume
@@ -435,6 +480,8 @@ class Bridge:
                         )
                     except Exception:
                         log.exception("[%s] worker: deferred keepalive failed", agent_name)
+                    finally:
+                        self._clear_busy(agent_name)
 
         log.info("[%s] worker stopped", agent_name)
 
@@ -457,6 +504,9 @@ class Bridge:
             eff_reply_topic = topic_id  # user-разговор: остаёмся в текущем топике
 
         self.sessions.on_incoming_message(agent_name)
+        # BUSY на время выполнения tool call — чтобы /new и daily reset не сбросили
+        # сессию посреди работы. Снимается в on_response (успех) или в finally воркера.
+        self.sessions.on_busy(agent_name, True)
         runner = self.runners.get(agent_name)
 
         stored_sid = self.sessions.get_session_id(agent_name)
@@ -1022,10 +1072,26 @@ class Bridge:
             return
 
         resolved = p.resolve()
-        allowed_roots = [AIOS_ROOT.resolve(), Path("/tmp")]
-        if not any(str(resolved).startswith(str(r)) for r in allowed_roots):
+        # Разрешённые корни (надёжная проверка через is_relative_to, не startswith,
+        # чтобы /tmpfoo не прошёл как /tmp).
+        allowed_roots = [AIOS_ROOT.resolve(), Path("/tmp").resolve()]
+        if not any(_is_within(resolved, r) for r in allowed_roots):
             log.warning("[%s] FILE tag path outside allowed dirs: %s", agent_name, resolved)
             await self._send_from(agent_name, f"⚠️ Отправка файлов разрешена только из {AIOS_ROOT}/ и /tmp/", thread_id=eff_thread)
+            return
+
+        # Запрет на секреты/служебные файлы даже внутри AIOS_ROOT
+        # (например Сисадмин не должен слить .env в чат).
+        _name = resolved.name
+        _rel = str(resolved)
+        if (_name in (".env", ".state", ".bridge.lock", ".rate_limits.json")
+                or _name.endswith(".env")
+                or "/bridge/.env" in _rel
+                or "/logs/" in _rel
+                or "/.ssh/" in _rel
+                or "credential" in _name.lower()):
+            log.warning("[%s] FILE tag blocked (secret/service file): %s", agent_name, resolved)
+            await self._send_from(agent_name, "⚠️ Этот файл отправлять нельзя (секреты/служебные данные).", thread_id=eff_thread)
             return
 
         if bot is None:
@@ -1320,19 +1386,6 @@ class Bridge:
                     log.exception("[%s] session summary before daily reset failed", name)
 
             # Сброс сессии
-            # v9.7: cleanup browser for personal_assistant
-            if name == "personal_assistant":
-                try:
-                    proc = await asyncio.create_subprocess_shell(
-                        "rm -f /root/.config/google-chrome/Singleton*",
-                        stdout=asyncio.subprocess.DEVNULL,
-                        stderr=asyncio.subprocess.DEVNULL,
-                    )
-                    await proc.wait()
-                    log.info("[personal_assistant] browser singleton cleanup on daily reset")
-                except Exception:
-                    pass
-
             self.sessions.on_reset_to_idle(name)
             log.info("[%s] daily reset done", name)
 
@@ -1398,7 +1451,13 @@ async def _save_attachment(bot, attach_tuple, agent_name: str) -> str:
     inbox = INBOX_ROOT / agent_name
     inbox.mkdir(parents=True, exist_ok=True)
 
-    # выбрать имя файла
+    # Лимит размера: TG bot API сам ~20MB, но проверяем явно где есть file_size
+    size = getattr(tg_obj, "file_size", None)
+    if size and size > MAX_INCOMING_FILE_MB * 1024 * 1024:
+        log.warning("[%s] attachment too large: %s bytes (limit %dMB)", agent_name, size, MAX_INCOMING_FILE_MB)
+        return ""
+
+    # выбрать имя файла (санитизировать — Telegram file_name произвольный)
     filename = getattr(tg_obj, "file_name", None)
     if not filename:
         # photo / voice / etc — генерируем
@@ -1406,9 +1465,14 @@ async def _save_attachment(bot, attach_tuple, agent_name: str) -> str:
                    "video": ".mp4", "video_note": ".mp4"}
         ext = ext_map.get(kind, "")
         filename = f"{kind}_{tg_obj.file_unique_id}{ext}"
+    filename = _safe_filename(filename)
 
     ts = datetime.now().strftime("%Y%m%d-%H%M%S")
     dest = inbox / f"{ts}_{filename}"
+    # Финальная защита: путь обязан остаться внутри inbox
+    if not _is_within(dest.resolve(), inbox.resolve()):
+        log.warning("[%s] attachment path escapes inbox: %s", agent_name, dest)
+        return ""
 
     await bot.download(tg_obj, destination=dest)
     log.info("[%s] saved attachment: %s", agent_name, dest)
@@ -1575,6 +1639,9 @@ async def run_agent_poller(bridge: Bridge, cfg: agents_registry.AgentConfig) -> 
         # Игнорируем других ботов (чтобы агенты не реагировали друг на друга в группе)
         if message.from_user.is_bot:
             return
+        # Опциональный allowlist пользователей (если задан ALLOWED_USER_IDS)
+        if ALLOWED_USER_IDS and message.from_user.id not in ALLOWED_USER_IDS:
+            return
 
         # Фильтр машинных сообщений (machine-prefix "🤖_<tag>_" в начале)
         raw_text = message.text or message.caption or ""
@@ -1626,6 +1693,9 @@ async def run_agent_poller(bridge: Bridge, cfg: agents_registry.AgentConfig) -> 
                     if cap:
                         caption_parts.append(cap)
                     for attach in _collect_attachments(mg_msg):
+                        if len(all_paths) >= MAX_FILES_PER_MESSAGE:
+                            log.warning("[%s] media group exceeds %d files — остальные пропущены", _resolved, MAX_FILES_PER_MESSAGE)
+                            break
                         try:
                             fp = await _save_attachment(bot, attach, _resolved)
                             if fp:
@@ -1842,7 +1912,10 @@ async def run_agent_poller(bridge: Bridge, cfg: agents_registry.AgentConfig) -> 
 
     @dp.callback_query(F.data.startswith("appr:"))
     async def on_approval_callback(callback: CallbackQuery):
-        """Обработка нажатия ✅/❌ кнопок апрува. Жать может любой участник группы."""
+        """Обработка нажатия ✅/❌ кнопок апрува. Жать может любой участник группы (или allowlist)."""
+        if ALLOWED_USER_IDS and callback.from_user.id not in ALLOWED_USER_IDS:
+            await callback.answer("Не твоя кнопка 🙂", show_alert=False)
+            return
         parts = callback.data.split(":", 2)
         if len(parts) != 3:
             await callback.answer()
@@ -1854,7 +1927,10 @@ async def run_agent_poller(bridge: Bridge, cfg: agents_registry.AgentConfig) -> 
 
     @dp.callback_query(F.data.startswith("new:"))
     async def on_new_callback(callback: CallbackQuery):
-        """Обработка подтверждения /new (сброс сессии). Жать может любой участник группы."""
+        """Обработка подтверждения /new (сброс сессии). Жать может любой участник группы (или allowlist)."""
+        if ALLOWED_USER_IDS and callback.from_user.id not in ALLOWED_USER_IDS:
+            await callback.answer("Не твоя кнопка 🙂", show_alert=False)
+            return
         parts = callback.data.split(":", 2)
         if len(parts) != 3:
             await callback.answer()
@@ -1911,19 +1987,6 @@ async def run_agent_poller(bridge: Bridge, cfg: agents_registry.AgentConfig) -> 
                 log.exception("[%s] session summary before /new failed", target_agent)
 
         bridge.sessions.on_reset_to_idle(target_agent)
-
-        # v9.7: cleanup browser for personal_assistant
-        if target_agent == "personal_assistant":
-            try:
-                proc = await asyncio.create_subprocess_shell(
-                    "rm -f /root/.config/google-chrome/Singleton*",
-                    stdout=asyncio.subprocess.DEVNULL,
-                    stderr=asyncio.subprocess.DEVNULL,
-                )
-                await proc.wait()
-                log.info("[personal_assistant] browser singleton cleanup on /new")
-            except Exception:
-                pass
 
         await callback.answer("✅ Сессия сброшена")
         try:
