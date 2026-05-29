@@ -19,22 +19,47 @@ warn() { printf '   \033[33m⚠️  %s\033[0m\n' "$*"; }
 err()  { printf '   \033[31m❌ %s\033[0m\n' "$*"; }
 hr()   { printf ' ───────────────────────────────\n'; }
 
-# read из /dev/tty — работает даже когда скрипт пришёл через `curl | bash`
+# Неинтерактивный режим: ответы берутся из env (для запуска AI-агентом, который
+# собрал их у пользователя). Включается AIOS_NONINTERACTIVE=1 или флагом --non-interactive.
+NONINTERACTIVE="${AIOS_NONINTERACTIVE:-0}"
+[[ "${1:-}" == "--non-interactive" || "${1:-}" == "-n" ]] && NONINTERACTIVE=1
+# Куда писать «UI-текст»: интерактивно — на терминал; в NI — в stdout (агент читает
+# и релеит пользователю), т.к. "$TTY" в окружении агента может отсутствовать.
+TTY=/dev/tty
+[[ "$NONINTERACTIVE" == 1 ]] && TTY=/dev/stdout
+
+# read из "$TTY" — работает даже когда скрипт пришёл через `curl | bash`
 ask() {  # ask "Вопрос: " VARNAME [default]
     local prompt="$1" __var="$2" def="${3:-}" reply
+    if [[ "$NONINTERACTIVE" == 1 ]]; then
+        # значение уже должно быть в переменной (из env); иначе — default
+        [[ -z "${!__var:-}" && -n "$def" ]] && printf -v "$__var" '%s' "$def"
+        return 0
+    fi
     if [[ -n "$def" ]]; then prompt="${prompt}[$def] "; fi
-    printf '%s' "$prompt" > /dev/tty
-    IFS= read -r reply < /dev/tty || reply=""
+    printf '%s' "$prompt" > "$TTY"
+    IFS= read -r reply < "$TTY" || reply=""
     [[ -z "$reply" && -n "$def" ]] && reply="$def"
     printf -v "$__var" '%s' "$reply"
 }
-confirm() {  # confirm "Готово?" → 0 если y/yes/да
+confirm() {  # confirm "Готово?" → 0 если y/yes/да. В NI — всегда НЕТ (опц. фичи off).
+    [[ "$NONINTERACTIVE" == 1 ]] && return 1
     local reply; ask "$1 (y/n): " reply
     [[ "$reply" =~ ^([yYдД]|yes|да)$ ]]
 }
+# Гейт «нажми y когда готово»: в NI пропускаем (агент гарантирует готовность шага).
+gate() {  # gate "Сообщение готовности?"
+    if [[ "$NONINTERACTIVE" == 1 ]]; then return 0; fi
+    until confirm "$1"; do :; done
+}
+# Обязательное значение в NI — иначе понятная ошибка вместо бесконечного цикла.
+ni_require() {  # ni_require VARNAME "что это"
+    [[ "$NONINTERACTIVE" == 1 && -z "${!1:-}" ]] && { err "NI: не задан $1 ($2)"; exit 1; }
+    return 0
+}
 
 banner() {
-cat > /dev/tty <<'EOF'
+cat > "$TTY" <<'EOF'
 
  ╔══════════════════════════════════════════╗
  ║  aios-public — AI-команда в Telegram      ║
@@ -80,7 +105,7 @@ step_system() {
     if [[ "$OS" == "mac" && -z "$PKG" ]]; then
         warn "Homebrew не найден — нужен для установки зависимостей"
         if confirm " Установить Homebrew?"; then
-            /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" < /dev/tty
+            /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" < "$TTY"
             PKG="brew"
         else
             err "Без Homebrew не смогу поставить python/ffmpeg. Прерываю."; exit 1
@@ -119,7 +144,7 @@ setup_user() {
     if [[ "$OS" != "mac" && "$IS_ROOT" == "1" ]]; then
         b " Обнаружен запуск под root на сервере"; hr
         warn "LLM-CLI (Claude/Codex) запрещают работу под root."
-        printf "    Создаю отдельного пользователя 'aios' — это безопасно и правильно.\n" > /dev/tty
+        printf "    Создаю отдельного пользователя 'aios' — это безопасно и правильно.\n" > "$TTY"
         if ! id aios >/dev/null 2>&1; then
             useradd -m -s /bin/bash aios
             ok "Пользователь aios создан"
@@ -180,10 +205,12 @@ setup_venv() {
 }
 
 # ───────── Шаг 1: Telegram-группа ─────────
-GROUP_CHAT_ID=""; TOPIC_ASSISTANT=""; TOPIC_SYSADMIN=""; TOPIC_SCRIBER=""
+# Значения для NI берём из env (агент собрал их у пользователя).
+GROUP_CHAT_ID="${AIOS_GROUP_CHAT_ID:-}"
+TOPIC_ASSISTANT="${TOPIC_ASSISTANT:-}"; TOPIC_SYSADMIN="${TOPIC_SYSADMIN:-}"; TOPIC_SCRIBER="${TOPIC_SCRIBER:-}"
 step_group() {
     b " Шаг 1: Telegram-группа"; hr
-    cat > /dev/tty <<'EOF'
+    [[ "$NONINTERACTIVE" == 1 ]] || cat > "$TTY" <<'EOF'
     Создадим группу для агентов. По шагам:
     1. Telegram → "Создать группу" (New Group)
     2. Назови как хочешь (напр. "Моя AI-команда")
@@ -193,9 +220,9 @@ step_group() {
     6. Создай 3 топика:
        • 💬 Ассистент   • ⚙️ Система   • 🎙 Скрайбер
 EOF
-    until confirm " Группа с 3 топиками готова?"; do :; done
+    gate " Группа с 3 топиками готова?"
 
-    cat > /dev/tty <<'EOF'
+    [[ "$NONINTERACTIVE" == 1 ]] || cat > "$TTY" <<'EOF'
 
     Теперь нужен ID группы:
     → Добавь в группу бота @raw_data_bot (или @getidsbot)
@@ -205,16 +232,21 @@ EOF
         ask " ID группы (-100...): " GROUP_CHAT_ID
         [[ "$GROUP_CHAT_ID" =~ ^-100[0-9]+$ ]] && break
         err "ID группы должен быть вида -100XXXXXXXXXX. Ещё раз."
+        [[ "$NONINTERACTIVE" == 1 ]] && { err "NI: AIOS_GROUP_CHAT_ID невалиден/не задан"; exit 1; }
     done
 
-    cat > /dev/tty <<'EOF'
+    [[ "$NONINTERACTIVE" == 1 ]] || cat > "$TTY" <<'EOF'
 
     И topic_id каждого топика:
     → Напиши сообщение в топик, перешли его @raw_data_bot
     → В ответе найди "message_thread_id"
 EOF
     _ask_topic() {  # _ask_topic "prompt" VARNAME
-        local v
+        local v="${!2:-}"
+        if [[ "$NONINTERACTIVE" == 1 ]]; then
+            [[ "$v" =~ ^[0-9]+$ ]] || { err "NI: topic_id $2 невалиден/не задан (нужно число)"; exit 1; }
+            printf -v "$2" '%s' "$v"; return
+        fi
         while :; do
             ask "$1" v
             if [[ "$v" =~ ^[0-9]+$ ]]; then printf -v "$2" '%s' "$v"; return; fi
@@ -228,10 +260,10 @@ EOF
 }
 
 # ───────── Шаг 2: бот ─────────
-BOT_TOKEN=""
+BOT_TOKEN="${BOT_TOKEN:-}"
 step_bot() {
     b " Шаг 2: Telegram-бот"; hr
-    cat > /dev/tty <<'EOF'
+    [[ "$NONINTERACTIVE" == 1 ]] || cat > "$TTY" <<'EOF'
     1. Открой @BotFather → /newbot
     2. Придумай имя и username (...bot)
     3. BotFather пришлёт токен (длинная строка с двоеточием)
@@ -241,8 +273,9 @@ EOF
         # формат BotFather: <digits>:<35+ alnum/_/->
         [[ "$BOT_TOKEN" =~ ^[0-9]+:[A-Za-z0-9_-]{30,}$ ]] && break
         err "Похоже это не токен (формат 123456789:AA...). Скопируй целиком от @BotFather."
+        [[ "$NONINTERACTIVE" == 1 ]] && { err "NI: BOT_TOKEN невалиден/не задан"; exit 1; }
     done
-    cat > /dev/tty <<'EOF'
+    [[ "$NONINTERACTIVE" == 1 ]] || cat > "$TTY" <<'EOF'
 
     Настрой бота у @BotFather:
     4. /mybots → выбери бота → Bot Settings
@@ -250,26 +283,37 @@ EOF
     6. Group Privacy → OFF   (важно — иначе бот не видит сообщения!)
     7. Добавь бота в группу → сделай Админом (статус, галочки не нужны)
 EOF
-    until confirm " Бот настроен, добавлен в группу и админ?"; do :; done
+    gate " Бот настроен, добавлен в группу и админ?"
     ok "Бот подключён"
 }
 
 # ───────── Шаг 3: выбор LLM ─────────
-RUNNER="claude"; RUNNER_MODEL="claude-sonnet-4-6"; RUNNER_STREAM="true"; DEEPSEEK_API_KEY=""
+RUNNER="${AIOS_RUNNER:-claude}"; RUNNER_MODEL=""; RUNNER_STREAM=""; DEEPSEEK_API_KEY="${DEEPSEEK_API_KEY:-}"
 step_llm() {
     b " Шаг 3: На каком LLM работают агенты?"; hr
-    cat > /dev/tty <<'EOF'
+    if [[ "$NONINTERACTIVE" != 1 ]]; then
+        cat > "$TTY" <<'EOF'
     1) Claude       — лучший, полноценный tool use (рекомендуем)
     2) Codex/ChatGPT— нужна подписка ChatGPT Plus (~$20/мес)
     3) DeepSeek     — самый дешёвый (API key)
     4) Gemini       — бесплатно (лимит/день)
 EOF
-    local choice; ask " Выбор (1-4): " choice "1"
-    case "$choice" in
-        2) RUNNER="codex";    RUNNER_MODEL="gpt-5.4-codex";   RUNNER_STREAM="false" ;;
-        3) RUNNER="deepseek"; RUNNER_MODEL="deepseek-v4-pro"; RUNNER_STREAM="false" ;;
-        4) RUNNER="gemini";   RUNNER_MODEL="gemini";          RUNNER_STREAM="false" ;;
-        *) RUNNER="claude";   RUNNER_MODEL="claude-sonnet-4-6"; RUNNER_STREAM="true" ;;
+        local choice; ask " Выбор (1-4): " choice "1"
+        case "$choice" in
+            2) RUNNER="codex" ;;
+            3) RUNNER="deepseek" ;;
+            4) RUNNER="gemini" ;;
+            *) RUNNER="claude" ;;
+        esac
+    fi
+    # Маппинг раннер → модель/стрим (для обоих режимов). Модели — плейсхолдеры,
+    # их потом можно сменить через Сисадмина под актуальные версии CLI.
+    case "$RUNNER" in
+        codex)    RUNNER_MODEL="gpt-5.4-codex";    RUNNER_STREAM="false" ;;
+        deepseek) RUNNER_MODEL="deepseek-v4-pro";  RUNNER_STREAM="false" ;;
+        gemini)   RUNNER_MODEL="gemini";           RUNNER_STREAM="false" ;;
+        claude)   RUNNER_MODEL="claude-sonnet-4-6"; RUNNER_STREAM="true" ;;
+        *) err "Неизвестный AIOS_RUNNER='$RUNNER' (ожидается claude|codex|deepseek|gemini)"; exit 1 ;;
     esac
     ok "Выбран runner: $RUNNER ($RUNNER_MODEL)"
 
@@ -279,6 +323,7 @@ EOF
         gemini) _ensure_cli gemini "npm i -g @google/gemini-cli"       "gemini" ;;
         deepseek)
             ask " DeepSeek API key: " DEEPSEEK_API_KEY
+            ni_require DEEPSEEK_API_KEY "ключ DeepSeek API"
             ok "Ключ DeepSeek сохраню в .env"
             ;;
     esac
@@ -292,23 +337,29 @@ _ensure_cli() {  # _ensure_cli <cmd> <install-hint> <auth-cmd>
     else
         warn "$cmd CLI не найден"
         command -v node >/dev/null 2>&1 || { pkg_install nodejs npm 2>/dev/null || pkg_install node 2>/dev/null || true; }
-        printf "    Установи вручную:  %s\n" "$hint" > /dev/tty
-        until confirm " Установил $cmd?"; do :; done
+        [[ "$NONINTERACTIVE" == 1 ]] && err "NI: $cmd CLI не установлен — поставь заранее ($hint) и авторизуй ($authcmd auth)" && exit 1
+        printf "    Установи вручную:  %s\n" "$hint" > "$TTY"
+        gate " Установил $cmd?"
     fi
     # авторизация
     if [[ -n "$RUN_USER" && "$RUN_USER" != "$(id -un)" ]]; then
-        printf "    Авторизуйся под пользователем %s:\n      su - %s -c '%s auth'\n" "$RUN_USER" "$RUN_USER" "$authcmd" > /dev/tty
+        printf "    Авторизуйся под пользователем %s:\n      su - %s -c '%s auth'\n" "$RUN_USER" "$RUN_USER" "$authcmd" > "$TTY"
     else
-        printf "    Авторизуйся:  %s auth   (или login)\n" "$authcmd" > /dev/tty
+        [[ "$NONINTERACTIVE" == 1 ]] || printf "    Авторизуйся:  %s auth   (или login)\n" "$authcmd" > "$TTY"
     fi
-    until confirm " Авторизация $cmd выполнена?"; do :; done
+    gate " Авторизация $cmd выполнена?"
 }
 
 # ───────── Шаг 4: голосовые (опц.) ─────────
-ASSEMBLYAI_API_KEY=""
+ASSEMBLYAI_API_KEY="${ASSEMBLYAI_API_KEY:-}"
 step_voice() {
     b " Шаг 4: Голосовые и транскрибация (опционально)"; hr
-    printf "    Нужен AssemblyAI (бесплатно \$50 на старте: assemblyai.com).\n" > /dev/tty
+    if [[ "$NONINTERACTIVE" == 1 ]]; then
+        [[ -n "$ASSEMBLYAI_API_KEY" ]] && ok "AssemblyAI ключ из env — голосовые включены" \
+            || warn "Голосовые пропущены (ASSEMBLYAI_API_KEY не задан) — подключишь позже через Сисадмина"
+        return 0
+    fi
+    printf "    Нужен AssemblyAI (бесплатно \$50 на старте: assemblyai.com).\n" > "$TTY"
     if confirm " Подключить голосовые сейчас?"; then
         ask " AssemblyAI API key: " ASSEMBLYAI_API_KEY
         ok "Ключ AssemblyAI сохраню"
@@ -323,7 +374,7 @@ step_pkg_perm() {
     # На Mac brew работает без root — вопрос не нужен.
     [[ "$OS" == "mac" ]] && return 0
     b " Шаг 4.5: Автономность Сисадмина (опционально)"; hr
-    cat > /dev/tty <<'EOF'
+    cat > "$TTY" <<'EOF'
     Иногда агентам нужен системный пакет (ffmpeg, OCR, конвертеры).
     Их установка требует прав root.
 
@@ -332,6 +383,10 @@ step_pkg_perm() {
     • Не разрешать — безопаснее: при необходимости Сисадмин даст тебе
       команду, выполнишь сам. (Python-библиотеки он ставит сам в любом случае.)
 EOF
+    if [[ "$NONINTERACTIVE" == 1 ]]; then
+        if [[ "${AIOS_INSTALL_PKGS:-0}" == 1 ]]; then ALLOW_PKG="yes"; ok "NI: разрешено (AIOS_INSTALL_PKGS=1)"; else ALLOW_PKG="no"; ok "NI: безопасный режим (без root у агента)"; fi
+        return 0
+    fi
     if confirm " Разрешить Сисадмину ставить системные пакеты сам?"; then
         ALLOW_PKG="yes"; ok "Разрешено — настрою права при запуске"
     else
@@ -490,9 +545,9 @@ step_launch() {
     local py="$INSTALL_DIR/.venv/bin/python"
 
     # doctor
-    ( cd "$INSTALL_DIR" && AIOS_ROOT="$INSTALL_DIR" "$py" bridge/doctor.py ) > /dev/tty 2>&1 || true
+    ( cd "$INSTALL_DIR" && AIOS_ROOT="$INSTALL_DIR" "$py" bridge/doctor.py ) > "$TTY" 2>&1 || true
 
-    cat > /dev/tty <<EOF
+    cat > "$TTY" <<EOF
 
  ╔══════════════════════════════════════════╗
  ║  ✅ Установка завершена!                  ║
