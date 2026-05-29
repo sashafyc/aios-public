@@ -27,6 +27,18 @@ workspace/permanent/*
 # Архивы контекста агентов
 agents/**/context_archive/
 
+# Рантайм-память агентов (пишется в процессе работы) — НЕ в VCS, переживает
+# обновления. В репо трекаются только шаблоны в _template/ (для новых агентов).
+agents/*/context.md
+agents/*/journal.md
+!agents/_template/context.md
+!agents/_template/journal.md
+
+# Инструкции «мягких» (рабочих) агентов — user-owned, git pull их НЕ трогает.
+# В репо только шаблоны *.example. Сисадмин («твёрдый») трекается как обычно.
+agents/assistant/CLAUDE.md
+agents/scriber/CLAUDE.md
+
 # Бэкапы обновлений (scripts/update.sh)
 .backups/
 

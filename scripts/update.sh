@@ -293,3 +293,20 @@ if [[ -n "$CONFLICTS" ]]; then
 fi
 echo ""
 echo " Если что-то пошло не так — откат: git reset --hard \$(cat $BACKUP_DIR/PREV_COMMIT) && restore конфигов из $BACKUP_DIR"
+
+# ───────── уведомление в Telegram (changelog + рекомендации) ─────────
+# UI продукта — это агенты, поэтому об обновлении сообщаем в топик Сисадмина:
+# changelog как в обычном софте + хинт про рекомендуемые изменения агентов.
+CHANGELOG_TG="$(git log --no-merges --pretty=format:'• %s' "$LOCAL_REF..$REMOTE_REF" 2>/dev/null | head -n 12)"
+UPGRADE_HINT=""
+if [[ -f "$AIOS_ROOT/knowledge/system/upgrade-notes.md" ]] && grep -q "$REMOTE_VER" "$AIOS_ROOT/knowledge/system/upgrade-notes.md" 2>/dev/null; then
+    UPGRADE_HINT="
+
+📝 В этой версии есть рекомендуемые изменения настроек агентов. Напиши Сисадмину «применить рекомендации» — он покажет их и спросит, обновлять ли агентов."
+fi
+notify_tg "✅ aios-public обновлён: $LOCAL_VER → $REMOTE_VER
+
+Изменения:
+${CHANGELOG_TG:-(см. CHANGELOG.md)}$UPGRADE_HINT"
+# Сброс маркеров «уже уведомили о версии» — чтобы будущие версии снова уведомляли.
+rm -f "$NOTIFY_STATE_DIR"/notified-* 2>/dev/null || true

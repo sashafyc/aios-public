@@ -11,10 +11,11 @@
 | `system/runners.md` | Бэкенды LLM: claude/codex/deepseek/gemini, авторизация, стоимость, переключение |
 | `system/delegation.md` | Делегация: теги, иерархия, настройка |
 | `system/voice.md` | Голосовые и транскрибация (AssemblyAI) |
-| `system/cron.md` | Запланированные задачи (trigger.py) |
+| `system/cron.md` | Единое расписание проекта (один файл `scripts/crontab`) |
 | `system/state-machine.md` | Состояния агента, daily reset, keep-alive, compact |
 | `system/troubleshooting.md` | Что делать когда что-то сломалось |
 | `system/update.md` | Безопасное обновление до новой версии (бэкап, откат, конфликты) |
+| `system/upgrade-notes.md` | Рекомендуемые изменения настроек агентов при обновлении (применяет Сисадмин) |
 
 ## Пользовательские знания (твои темы)
 

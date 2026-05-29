@@ -403,6 +403,24 @@ step_generate() {
              "$INSTALL_DIR/workspace/permanent"
     ok "Рабочие директории созданы"
 
+    # Материализация user-owned файлов агентов (они gitignored, чтобы обновление
+    # их не трогало; в репо лежат только шаблоны). Создаём ЕСЛИ ИХ ЕЩЁ НЕТ —
+    # повторный install/обновление НЕ перезатирают существующие.
+    local tmpl="$INSTALL_DIR/agents/_template"
+    for a in assistant sysadmin scriber; do
+        local d="$INSTALL_DIR/agents/$a"
+        [[ -d "$d" ]] || continue
+        # Инструкции рабочих (мягких) агентов — из CLAUDE.md.example.
+        # Сисадмин («твёрдый») везёт CLAUDE.md в репозитории — его не трогаем.
+        if [[ ! -f "$d/CLAUDE.md" && -f "$d/CLAUDE.md.example" ]]; then
+            cp "$d/CLAUDE.md.example" "$d/CLAUDE.md"
+        fi
+        # Рантайм-память — из шаблона _template.
+        [[ ! -f "$d/context.md" && -f "$tmpl/context.md" ]] && cp "$tmpl/context.md" "$d/context.md"
+        [[ ! -f "$d/journal.md" && -f "$tmpl/journal.md" ]] && cp "$tmpl/journal.md" "$d/journal.md"
+    done
+    ok "Файлы агентов материализованы (инструкции + память)"
+
     # симлинки агентов (на случай если cp их развернул)
     for a in assistant sysadmin scriber _template; do
         local d="$INSTALL_DIR/agents/$a"

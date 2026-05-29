@@ -54,7 +54,11 @@ class DeepSeekRunner(AgentRunner):
         # историю в JSONL рядом с агентом и подгружаем на старте.
         self._history_path = self.workdir / ".deepseek_history.jsonl"
 
+        # Рабочие агенты — user-owned (CLAUDE.md gitignored, install материализует
+        # из CLAUDE.md.example). Fallback на шаблон, если живого файла ещё нет.
         claude_md = self.workdir / "CLAUDE.md"
+        if not claude_md.exists():
+            claude_md = self.workdir / "CLAUDE.md.example"
         if claude_md.exists():
             self._system_prompt = claude_md.read_text()[:8000]
 
