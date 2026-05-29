@@ -42,7 +42,7 @@
 
 ## bridge/settings.json — permissions
 
-`blockedCommands` / `blockedPaths` — что агентам запрещено даже в bypass-режиме. `__AIOS_ROOT__` заменяется на путь установки при install.
+Нативная схема Claude Code: `permissions.deny` (жёсткий запрет) и `permissions.ask` (спросить) с паттернами вроде `Bash(rm -rf:*)`, `Read(.env)`, `Read(./.git/**)`. Эти правила действуют **даже в bypass-режиме** — это и есть страховка от опасных команд и чтения секретов. `settings-sysadmin.json` мягче (Сисадмин управляет ключами, поэтому не запрещает `.env`).
 
 ## Запуск/остановка
 
