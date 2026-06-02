@@ -38,7 +38,7 @@ from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
 from typing import Optional
 
-BRIDGE_VERSION = "1.0.0"  # aios-public
+BRIDGE_VERSION = "1.0.1"  # aios-public
 
 sys.path.insert(0, str(Path(__file__).parent))
 
@@ -270,6 +270,12 @@ FORWARD_DEBOUNCE_S = float(os.getenv("FORWARD_DEBOUNCE_S", "1.0"))
 APPROVAL_TTL_S = float(os.getenv("APPROVAL_TTL_S", "21600"))  # 6 часов
 # Макс глубина цепочки делегаций (A→B→C→…). Дальше — стоп, чтобы исключить циклы.
 MAX_DELEGATION_DEPTH = int(os.getenv("MAX_DELEGATION_DEPTH", "3"))
+# Окно self-echo guard: сколько секунд помним отправленные агентом сообщения,
+# чтобы не дать ему среагировать на собственный текст, вернувшийся как user_message.
+SELF_ECHO_TTL_S = int(os.getenv("SELF_ECHO_TTL_S", "900"))
+# Окно вокруг isolated-прогона агента: не-isolated user_message для того же агента
+# в этом окне = его собственный self-post во время крона → дропаем (не реагируем).
+ISOLATED_ECHO_WINDOW_S = int(os.getenv("ISOLATED_ECHO_WINDOW_S", "300"))
 
 
 class Bridge:
@@ -289,9 +295,47 @@ class Bridge:
         # авто-flush сообщений накопленных пока агент BUSY.
         self._agent_queues: dict[str, asyncio.Queue] = {}
         self._agent_workers: dict[str, asyncio.Task] = {}
+        # Self-echo guard: что агент сам отправил в чат за последние SELF_ECHO_TTL_S.
+        # Нужно чтобы агент НЕ реагировал на собственные сообщения, если они
+        # вернулись как user_message (типичная петля: cron-агент постит отчёт,
+        # потом получает его обратно и пишет реакцию на свой же отчёт).
+        self._recent_agent_posts: dict[str, list[tuple[float, str]]] = {}
+        # Когда у агента был последний isolated-прогон (для self-post guard в очереди).
+        self._isolated_run_ts: dict[str, float] = {}
 
     def register_bot(self, agent_name: str, bot) -> None:
         self._bots[agent_name] = bot
+
+    @staticmethod
+    def _norm_msg(text: str) -> str:
+        """Нормализация для сравнения сообщений (убираем пробелы/регистр, берём начало)."""
+        return re.sub(r"\s+", " ", text or "").strip().lower()[:300]
+
+    def _record_agent_post(self, agent_name: str, text: str) -> None:
+        """Запомнить что агент отправил в чат — для self-echo guard."""
+        if not text or not text.strip():
+            return
+        now_ts = datetime.now(MSK).timestamp()
+        lst = self._recent_agent_posts.setdefault(agent_name, [])
+        lst.append((now_ts, self._norm_msg(text)))
+        cutoff = now_ts - SELF_ECHO_TTL_S
+        self._recent_agent_posts[agent_name] = [
+            (ts, t) for (ts, t) in lst if ts >= cutoff
+        ][-20:]
+
+    def _is_self_echo(self, agent_name: str, text: str) -> bool:
+        """True если text — это то, что агент сам недавно отправил в чат."""
+        norm = self._norm_msg(text)
+        if not norm:
+            return False
+        now_ts = datetime.now(MSK).timestamp()
+        cutoff = now_ts - SELF_ECHO_TTL_S
+        for ts, t in self._recent_agent_posts.get(agent_name, []):
+            if ts < cutoff:
+                continue
+            if norm == t or norm.startswith(t[:120]) or t.startswith(norm[:120]):
+                return True
+        return False
 
     async def startup_announce(self) -> None:
         """После старта моста пишет в топик Сисадмина: один раз — welcome (с советом
@@ -434,6 +478,10 @@ class Bridge:
         await self._run_agent(agent, text, caller="user", topic_id=cfg.topic_id)
 
     async def deliver_user_message(self, agent_name: str, text: str, *, topic_id: int, is_forward: bool = False) -> None:
+        # Агент НЕ должен реагировать на собственные сообщения, вернувшиеся как user_message.
+        if self._is_self_echo(agent_name, text):
+            log.warning("[%s] self-echo suppressed: собственное сообщение агента пришло как user_message (%d chars), не запускаю реакцию", agent_name, len(text))
+            return
         log_event("user_msg", to=agent_name, topic=topic_id, text=text, source="user")
         await self._run_agent(agent_name, text, caller="user", topic_id=topic_id, is_forward=is_forward)
 
@@ -1107,9 +1155,16 @@ class Bridge:
             log.warning("[%s] disabled — isolated trigger dropped", agent_name)
             return
 
+        # Отмечаем окно isolated-прогона: если в это время прилетит не-isolated
+        # user_message для этого же агента — это его собственный self-post
+        # (агент пишет отчёт в очередь во время крон-прогона). Дропнем его в
+        # _process_queue, чтобы агент не реагировал на свой же отчёт.
+        self._isolated_run_ts[agent_name] = datetime.now(MSK).timestamp()
+
         lock = self.runners.lock(agent_name)
         async with lock:
             runner = self.runners.get(agent_name)
+            self._isolated_run_ts[agent_name] = datetime.now(MSK).timestamp()
             log.info("[%s] ISOLATED run text=%r", agent_name, text[:120])
             try:
                 result: RunResult = await runner.run_isolated(text)
@@ -1157,12 +1212,14 @@ class Bridge:
                     log.info("[%s] isolated: stripped meta-tail (%d chars)", agent_name, len(_meta_match.group(0)))
                     text = text[:_meta_match.start()].rstrip()
 
-                # Suppress full-housekeeping messages (summaries, context compression)
-                _housekeeping = (
+                # Suppress full-housekeeping messages (summaries, context compression).
+                # ВАЖНО: глушим только КОРОТКИЕ служебные ответы. Реальные отчёты
+                # длинные (>400 симв) и могут начинаться с "Готово. Вот что нашёл..." —
+                # их подавлять нельзя, иначе отчёт не доедет до чата.
+                _housekeeping = len(text) < 400 and (
                     re.match(r"^Готово\.?\s*(Саммари|Context|context|Итог|Вот что)", text, re.IGNORECASE)
                     or re.match(r"^Саммари сессии", text, re.IGNORECASE)
-                    or (len(text) < 200 and "Саммари сессии" in text and text.startswith("Готово"))
-                    or (len(text) < 300 and re.match(r"^(Готово|Done|Выполнено)\.?\s*$", text.strip(), re.IGNORECASE))
+                    or re.match(r"^(Готово|Done|Выполнено)\.?\s*$", text.strip(), re.IGNORECASE)
                 )
                 if _housekeeping:
                     log.info("[%s] isolated: suppressed housekeeping msg (%d chars)", agent_name, len(text))
@@ -1201,6 +1258,9 @@ class Bridge:
         bot = self._bots.get(agent_name)
         eff_chat_id = cfg.chat_id if cfg.chat_id else GROUP_CHAT_ID
         eff_thread = thread_id if thread_id is not None else cfg.topic_id
+        # Запоминаем что агент сам отправил — чтобы не среагировать на это,
+        # если текст вернётся как user_message (self-echo guard).
+        self._record_agent_post(agent_name, text)
         if bot is None:
             log.info("[TG-DRY/%s] chat=%s topic=%s text=%s", agent_name, eff_chat_id, eff_thread, text[:200])
             return
@@ -1364,6 +1424,10 @@ class Bridge:
                     isolated = bool(data.get("isolated", False))
                     if agent and text and agent in agents_registry.AGENTS:
                         if isolated:
+                            # Отмечаем окно isolated-прогона СРАЗУ (до create_task),
+                            # чтобы self-post этого же агента, прилетевший в это окно,
+                            # гарантированно дропнулся даже если он в том же tick.
+                            self._isolated_run_ts[agent] = datetime.now(MSK).timestamp()
                             # Fire-and-forget: не блокируем maintenance_loop
                             task = asyncio.create_task(
                                 self._run_agent_isolated(agent, text),
@@ -1372,6 +1436,16 @@ class Bridge:
                             self._bg_tasks.add(task)
                             task.add_done_callback(self._bg_tasks.discard)
                         else:
+                            # Self-post guard: не-isolated user_message для агента,
+                            # который прямо сейчас в окне своего isolated-прогона —
+                            # это его собственный отчёт, выложенный в очередь. Не
+                            # подаём его агенту как входящее (иначе ответит на свой
+                            # же отчёт). Отчёт и так уходит в чат авто-постом.
+                            _iso_ts = self._isolated_run_ts.get(agent, 0)
+                            if datetime.now(MSK).timestamp() - _iso_ts < ISOLATED_ECHO_WINDOW_S:
+                                log.warning("[%s] self-post в очереди во время isolated-прогона — дропнут (%d chars), реакция не запускается", agent, len(text))
+                                fpath.unlink(missing_ok=True)
+                                continue
                             cfg = agents_registry.get(agent)
                             await self.deliver_user_message(agent, text, topic_id=cfg.topic_id)
                     else:
@@ -1559,9 +1633,11 @@ class Bridge:
                 log.info("[%s] context.md snapshot → context_archive/%s.md", name, today)
             # session summary для personal-агентов перед daily reset
             # Скипаем если агент не получал реальных сообщений — чтобы не слать пустые саммари
+            # NB: НЕ завязываемся на real_turns_since_compact — ночная idle-компакция
+            # обнуляет этот счётчик ДО reset, из-за чего саммари ошибочно скипалось,
+            # даже если за день был реальный разговор. Достаточно last_activity > last_reset.
             _had_real_activity = (
                 st.session_id
-                and st.real_turns_since_compact > 0
                 and st.last_activity
                 and (not st.last_reset or st.last_activity > st.last_reset)
             )
@@ -1588,6 +1664,18 @@ class Bridge:
 
             # Сброс сессии
             self.sessions.on_reset_to_idle(name)
+            # КРИТично: on_reset_to_idle чистит session_id только в state.json,
+            # но в раннере остаётся in-memory self._last_session_id. Без сброса
+            # следующий запуск делает `sid = session_id or self._last_session_id`
+            # → --resume вчерашней сессии, и агент «помнит» прошлый день. Чистим раннер.
+            try:
+                runner = self.runners.get(name)
+                if runner is not None and hasattr(runner, "reset"):
+                    _res = runner.reset()
+                    if asyncio.iscoroutine(_res):
+                        await _res
+            except Exception:
+                log.exception("[%s] runner reset on daily reset failed", name)
             log.info("[%s] daily reset done", name)
 
     async def shutdown(self) -> None:

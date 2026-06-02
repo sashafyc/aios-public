@@ -2,7 +2,7 @@
 
 [![Telegram](https://img.shields.io/badge/Telegram-@bizsaler-2CA5E0?logo=telegram&logoColor=white)](https://t.me/bizsaler) [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-**v1.0.0** · Команда AI-агентов прямо в Telegram: один бот, а топики — это отдельные агенты, каждый со своей ролью.
+**v1.0.1** · Команда AI-агентов прямо в Telegram: один бот, а топики — это отдельные агенты, каждый со своей ролью.
 
 Каждый агент работает на своём движке — **Claude, Codex, DeepSeek или Gemini** — выбираешь под задачу и бюджет.
 
