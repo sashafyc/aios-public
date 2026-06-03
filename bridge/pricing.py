@@ -18,10 +18,15 @@ PRICING: dict[str, dict] = {
     # значения тут справочные, по публичному API-прайсу)
     "claude-sonnet-4-6": {"input": 3.0,  "output": 15.0, "billing": "subscription"},
     "claude-opus-4-6":   {"input": 15.0, "output": 75.0, "billing": "subscription"},
-    # OpenAI Codex (Plus-подписка; API-прайс справочно)
-    "gpt-5.4":           {"input": 1.25, "output": 10.0, "billing": "subscription"},
-    "gpt-5.4-codex":     {"input": 1.25, "output": 10.0, "billing": "subscription"},
-    "gpt-5.5-codex":     {"input": 1.25, "output": 10.0, "billing": "subscription"},
+    # OpenAI GPT-5 family (через Codex CLI на ChatGPT-подписке; per-token цены — по API-прайсу, справочно)
+    "gpt-5":             {"input": 1.25, "output": 10.0, "billing": "subscription"},
+    "gpt-5-mini":        {"input": 0.25, "output": 2.0,  "billing": "subscription"},
+    "gpt-5.4":           {"input": 2.50, "output": 15.0, "billing": "subscription"},
+    "gpt-5.4-codex":     {"input": 2.50, "output": 15.0, "billing": "subscription"},
+    "gpt-5.4-mini":      {"input": 0.75, "output": 4.5,  "billing": "subscription"},
+    "gpt-5.4-nano":      {"input": 0.20, "output": 1.25, "billing": "subscription"},
+    "gpt-5.5":           {"input": 5.0,  "output": 30.0, "billing": "subscription"},
+    "gpt-5.5-codex":     {"input": 5.0,  "output": 30.0, "billing": "subscription"},
     # DeepSeek (pay-as-you-go — РЕАЛЬНЫЕ деньги)
     "deepseek-v4-pro":   {"input": 0.435, "output": 0.87, "billing": "payg"},
     "deepseek-v4-flash": {"input": 0.14,  "output": 0.28, "billing": "payg"},
