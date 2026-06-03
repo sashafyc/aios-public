@@ -165,6 +165,21 @@ def reload_if_changed() -> bool:
                     list(removed) or "[]",
                     list(changed) or "[]",
                 )
+            # авто-синхронизация карты раннеров из agents.toml
+            # (knowledge/system/agents-runners.md). Источник правды — agents.toml.
+            try:
+                import subprocess as _sp, sys as _sys
+                from pathlib import Path as _P
+                _gen = _P(__file__).resolve().parent.parent / "scripts" / "gen-runners-doc.py"
+                if _gen.exists():
+                    _r = _sp.run([_sys.executable, str(_gen)],
+                                 capture_output=True, text=True, timeout=30)
+                    if _r.returncode != 0:
+                        log.error("runner-doc regen failed: %s", (_r.stderr or "")[:400])
+                    else:
+                        log.info("runner-doc regen OK (agents.toml → agents-runners.md)")
+            except Exception:
+                log.exception("failed to trigger runner-doc regen")
             return True
         except Exception:
             log.exception("Failed to reload agents.toml")

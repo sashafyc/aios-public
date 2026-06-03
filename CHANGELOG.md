@@ -13,8 +13,18 @@
 
 _Сюда попадают изменения, которые уедут в следующий публичный релиз._
 
+### Добавлено
+- **Единый прайс-лист `bridge/pricing.py`** — цены всех моделей ($/1M токенов) в одном месте. Раннеры (codex, deepseek) считают `cost_usd` из него; `session_logger` использует как fallback. Обновлять цены теперь только тут.
+- **Автоген-карта раннеров `knowledge/system/agents-runners.md`** — кто на каком раннере/модели/цене сейчас, генерируется из `agents.toml` + `pricing.py` скриптом `scripts/gen-runners-doc.py`. Перегенерируется автоматически при hot-reload `agents.toml` (hook в `agents_registry.py`) — доки не рассинхронятся с конфигом. Ручная прогонка: `python3 scripts/gen-runners-doc.py [--check]`.
+
 ### Изменено
 - **DeepSeek-раннер полностью переписан на CodeWhale CLI** — теперь это полноценный агент, как Claude/Codex: реальные инструменты (`--auto`: чтение/запись файлов, shell), память диалога через сессии (`--resume <session_id>`) и стриминг (`--output-format stream-json`). Прежний chat-API раннер (умел только текст, не мог работать с файлами) удалён — `runner_type = "deepseek"` теперь всегда агентский. Требует CLI `codewhale` (`npm i -g codewhale`, преемник deprecated `deepseek-tui`) и `DEEPSEEK_API_KEY`.
+- **`knowledge/system/runners.md` актуализирован под CodeWhale** — DeepSeek описан как агент с инструментами, сессиями и стримингом (раньше — как chat-API без памяти), цены и таблица приведены к текущим.
+
+### Исправлено
+- **Стоимость Codex/GPT-прогонов теперь считается** — раньше `cost_usd` у codex-раннера был жёстко `0.0`, прогоны логировались как бесплатные. Теперь считается из `pricing.py` по токенам.
+- **Токены DeepSeek-прогонов корректно логируются** — usage отдавал ключи `input`/`output`, а `session_logger` ждал `input_tokens`/`output_tokens`, из-за чего `tokens_in/out` писались как `null`. Ключи приведены в соответствие.
+- **Убрана мёртвая зависимость `httpx`** из `requirements.txt` — DeepSeek-раннер давно на CLI, httpx больше нигде не используется.
 
 ## [1.0.1] — 2026-06-02
 

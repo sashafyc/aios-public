@@ -30,14 +30,13 @@ from pathlib import Path
 from typing import AsyncGenerator, Optional
 
 from claude_runner import AgentRunner, RunResult, StreamEvent
+import pricing as _pricing
 
 
 log = logging.getLogger("bridge.deepseek_runner")
 
 CODEWHALE_BIN = os.environ.get("CODEWHALE_BIN", "/usr/bin/codewhale")
 DEFAULT_MODEL = "deepseek-v4-pro"
-# $/1M токенов (DeepSeek v4-pro)
-COST_PER_M = {"input": 0.435, "output": 0.87}
 
 
 class DeepSeekRunner(AgentRunner):
@@ -138,8 +137,8 @@ class DeepSeekRunner(AgentRunner):
         if meta:
             it = int(meta.get("input_tokens", 0) or 0)
             ot = int(meta.get("output_tokens", 0) or 0)
-            usage = {"input": it, "output": ot, "total": it + ot}
-            cost = it * COST_PER_M["input"] / 1e6 + ot * COST_PER_M["output"] / 1e6
+            usage = {"input_tokens": it, "output_tokens": ot, "total": it + ot}
+            cost = _pricing.cost_usd(self.model, it, ot)
         if err or (status not in ("completed", None, "")):
             return RunResult(text=text[:16000], error=(err or f"status={status}"),
                              usage=usage, cost_usd=cost, duration_ms=duration_ms)

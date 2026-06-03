@@ -9,6 +9,7 @@
 | `system/architecture.md` | Обзор: мост, агенты, routing, где что лежит |
 | `system/add-agent.md` | Как создать агента (механика) |
 | `system/runners.md` | Бэкенды LLM: claude/codex/deepseek/gemini, авторизация, стоимость, переключение |
+| `system/agents-runners.md` | **Автоген-карта**: какой агент на каком раннере/модели/цене сейчас (из `agents.toml` + `pricing.py`) |
 | `system/delegation.md` | Делегация: теги, иерархия, настройка |
 | `system/voice.md` | Голосовые и транскрибация (AssemblyAI) |
 | `system/cron.md` | Единое расписание проекта (один файл `scripts/crontab`) |

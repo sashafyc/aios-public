@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Optional
 
 from claude_runner import AgentRunner, RunResult, SubprocessRunner
+import pricing as _pricing
 
 
 log = logging.getLogger("bridge.codex_runner")
@@ -146,11 +147,13 @@ class CodexSubprocessRunner(AgentRunner):
         if thread_id:
             self._last_session_id = thread_id
 
+        _ti = int(usage.get("input_tokens") or usage.get("input") or 0)
+        _to = int(usage.get("output_tokens") or usage.get("output") or 0)
         return RunResult(
             text=text[:16000],
             usage=usage,
             session_id=thread_id,
-            cost_usd=0.0,
+            cost_usd=_pricing.cost_usd(self.model, _ti, _to),
             duration_ms=duration_ms,
         )
 
