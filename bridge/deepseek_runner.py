@@ -1,11 +1,22 @@
 """
-deepseek_runner.py — раннер для DeepSeek API.
+deepseek_runner.py — агентский раннер DeepSeek через CodeWhale CLI.
 
-Интерфейс: AgentRunner (run, run_isolated, compact, reset, close).
-DeepSeek API = OpenAI-compatible chat/completions через httpx.
-Контекст: conversation history в памяти, compact обрезает, reset очищает.
+Единый раннер «всё в одном» (как claude/codex): реальные инструменты
+(--auto: чтение/запись файлов, shell), память диалога через сессии
+(--resume <session_id>), стриминг (--output-format stream-json).
+Заменяет прежний chat-API раннер (без инструментов).
 
-Env: DEEPSEEK_API_KEY
+CLI: `codewhale` (преемник deprecated deepseek-tui; npm i -g codewhale).
+Бинарь: /usr/bin/codewhale. Модель по умолчанию: deepseek-v4-pro.
+Env: DEEPSEEK_API_KEY (наследуется subprocess'ом из окружения bridge).
+
+stream-json события CodeWhale:
+  {"type":"content","content":"..."}                  — текстовая дельта
+  {"type":"session_capture","content":"<uuid>"}        — id сессии
+  {"type":"metadata","meta":{"session_id","input_tokens","output_tokens","status"}}
+  {"type":"tool", ...}                                 — вызов инструмента (если есть)
+  {"type":"error","error":"..."} / {"type":"done"}
+Вывод может содержать ANSI/terminal-escape мусор — парсим от первого '{'.
 """
 
 from __future__ import annotations
@@ -18,21 +29,19 @@ import time
 from pathlib import Path
 from typing import AsyncGenerator, Optional
 
-import httpx
-
 from claude_runner import AgentRunner, RunResult, StreamEvent
 
 
 log = logging.getLogger("bridge.deepseek_runner")
 
-API_URL = "https://api.deepseek.com/chat/completions"
+CODEWHALE_BIN = os.environ.get("CODEWHALE_BIN", "/usr/bin/codewhale")
 DEFAULT_MODEL = "deepseek-v4-pro"
+# $/1M токенов (DeepSeek v4-pro)
 COST_PER_M = {"input": 0.435, "output": 0.87}
-MAX_HISTORY_MESSAGES = 40
-MAX_HISTORY_CHARS = 400_000
 
 
 class DeepSeekRunner(AgentRunner):
+    """Агентский DeepSeek через CodeWhale CLI: руки + сессии + стриминг."""
 
     def __init__(
         self,
@@ -40,148 +49,172 @@ class DeepSeekRunner(AgentRunner):
         workdir: Path,
         *,
         model: Optional[str] = None,
-        timeout_s: int = 300,
+        timeout_s: int = 2400,
     ):
         self.name = name
         self.workdir = Path(workdir)
         self.model = model or DEFAULT_MODEL
         self.timeout_s = timeout_s
-        self._history: list[dict] = []
-        self._system_prompt: Optional[str] = None
         self._last_session_id: Optional[str] = None
-        # DeepSeek — API-runner: история живёт в памяти, поэтому при рестарте
-        # моста контекст терялся (хотя в .state оставался session_id). Персистим
-        # историю в JSONL рядом с агентом и подгружаем на старте.
-        self._history_path = self.workdir / ".deepseek_history.jsonl"
+        self._system_prompt: Optional[str] = None
 
-        # Рабочие агенты — user-owned (CLAUDE.md gitignored, install материализует
-        # из CLAUDE.md.example). Fallback на шаблон, если живого файла ещё нет.
         claude_md = self.workdir / "CLAUDE.md"
-        if not claude_md.exists():
-            claude_md = self.workdir / "CLAUDE.md.example"
         if claude_md.exists():
-            self._system_prompt = claude_md.read_text()[:8000]
+            try:
+                self._system_prompt = claude_md.read_text(encoding="utf-8")[:8000]
+            except Exception:
+                self._system_prompt = None
 
-        self._load_history()
+        # session id переживает рестарт моста
+        self._sid_path = self.workdir / ".codewhale_session"
+        if self._sid_path.exists():
+            try:
+                sid = self._sid_path.read_text(encoding="utf-8").strip()
+                self._last_session_id = sid or None
+            except Exception:
+                self._last_session_id = None
 
-    def _load_history(self) -> None:
-        """Подгрузить историю диалога с диска (после рестарта моста)."""
-        if not self._history_path.exists():
-            return
+    # ------------------------------------------------------------------ utils
+    @staticmethod
+    def _sanitize(message: str) -> str:
+        if message and message.lstrip().startswith("-"):
+            return " " + message
+        return message
+
+    def _save_sid(self) -> None:
         try:
-            loaded: list[dict] = []
-            for line in self._history_path.read_text(encoding="utf-8").splitlines():
-                line = line.strip()
-                if line:
-                    loaded.append(json.loads(line))
-            self._history = loaded
-            log.info("[%s] deepseek history restored: %d messages", self.name, len(loaded))
+            if self._last_session_id:
+                self._sid_path.parent.mkdir(parents=True, exist_ok=True)
+                self._sid_path.write_text(self._last_session_id, encoding="utf-8")
         except Exception:
-            log.exception("[%s] failed to load deepseek history — starting fresh", self.name)
-            self._history = []
+            log.exception("[%s] failed to persist codewhale session id", self.name)
 
-    def _save_history(self) -> None:
-        """Атомарно сохранить историю в JSONL (rewrite — история ограничена)."""
+    def _build_cmd(self, prompt: str, sid: Optional[str]) -> list[str]:
+        cmd = [
+            CODEWHALE_BIN, "exec", "--auto",
+            "--output-format", "stream-json",
+            "--model", self.model,
+        ]
+        if sid:
+            cmd += ["--resume", sid]
+        cmd.append(prompt)
+        return cmd
+
+    def _prepare_prompt(self, message: str, sid: Optional[str]) -> str:
+        msg = self._sanitize(message)
+        # system-роль подмешиваем только в НОВУЮ сессию; при resume она уже в истории.
+        if self._system_prompt and not sid:
+            return f"{self._system_prompt}\n\n---\n# ТЕКУЩАЯ ЗАДАЧА\n{msg}"
+        return msg
+
+    @staticmethod
+    def _parse_event(line: str) -> Optional[dict]:
+        i = line.find("{")
+        if i < 0:
+            return None
         try:
-            self._history_path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = self._history_path.with_suffix(".jsonl.tmp")
-            with open(tmp, "w", encoding="utf-8") as f:
-                for m in self._history:
-                    f.write(json.dumps(m, ensure_ascii=False) + "\n")
-            os.replace(tmp, self._history_path)
-        except Exception:
-            log.exception("[%s] failed to persist deepseek history", self.name)
+            return json.loads(line[i:].strip())
+        except json.JSONDecodeError:
+            return None
 
-    def _get_api_key(self) -> str:
-        key = os.environ.get("DEEPSEEK_API_KEY", "")
-        if not key:
-            raise RuntimeError("DEEPSEEK_API_KEY not set")
-        return key
+    # --------------------------------------------------------------- core run
+    async def _spawn(self, prompt: str, sid: Optional[str]):
+        cmd = self._build_cmd(prompt, sid)
+        log.debug("[%s] codewhale spawn (resume=%s, model=%s)", self.name, bool(sid), self.model)
+        return await asyncio.create_subprocess_exec(
+            *cmd,
+            cwd=str(self.workdir),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
 
-    def _build_messages(self, user_message: str) -> list[dict]:
-        msgs = []
-        if self._system_prompt:
-            msgs.append({"role": "system", "content": self._system_prompt})
-        msgs.extend(self._history)
-        msgs.append({"role": "user", "content": user_message})
-        return msgs
+    def _finalize(self, parts: list[str], meta: dict, sid_capture: Optional[str],
+                  err: Optional[str], duration_ms: int, *, isolated: bool) -> RunResult:
+        text = "".join(parts)
+        session_id = (meta.get("session_id") or sid_capture or None)
+        status = meta.get("status")
+        usage = {}
+        cost = 0.0
+        if meta:
+            it = int(meta.get("input_tokens", 0) or 0)
+            ot = int(meta.get("output_tokens", 0) or 0)
+            usage = {"input": it, "output": ot, "total": it + ot}
+            cost = it * COST_PER_M["input"] / 1e6 + ot * COST_PER_M["output"] / 1e6
+        if err or (status not in ("completed", None, "")):
+            return RunResult(text=text[:16000], error=(err or f"status={status}"),
+                             usage=usage, cost_usd=cost, duration_ms=duration_ms)
+        # запоминаем сессию (кроме isolated — он не должен мутировать state)
+        if session_id and not isolated:
+            self._last_session_id = session_id
+            self._save_sid()
+        return RunResult(
+            text=text[:16000], usage=usage, cost_usd=cost,
+            duration_ms=duration_ms,
+            session_id=(None if isolated else session_id),
+        )
 
-    def _trim_history(self) -> None:
-        if len(self._history) > MAX_HISTORY_MESSAGES * 2:
-            self._history = self._history[-(MAX_HISTORY_MESSAGES * 2):]
-        total = sum(len(m.get("content", "")) for m in self._history)
-        while total > MAX_HISTORY_CHARS and len(self._history) > 2:
-            total -= len(self._history.pop(0).get("content", ""))
-
-    async def _call(self, messages: list[dict]) -> tuple[httpx.Response | None, str | None, int]:
+    async def _run_once(self, message: str, *, sid: Optional[str], isolated: bool) -> RunResult:
+        prompt = self._prepare_prompt(message, sid)
         started = time.monotonic()
         try:
-            async with httpx.AsyncClient(timeout=self.timeout_s) as client:
-                resp = await client.post(
-                    API_URL,
-                    headers={
-                        "Authorization": f"Bearer {self._get_api_key()}",
-                        "Content-Type": "application/json",
-                    },
-                    json={
-                        "model": self.model,
-                        "messages": messages,
-                        "max_tokens": 8192,
-                        "temperature": 0.7,
-                        "stream": False,
-                    },
-                )
-            return resp, None, int((time.monotonic() - started) * 1000)
-        except httpx.TimeoutException:
-            return None, f"deepseek timeout {self.timeout_s}s", int((time.monotonic() - started) * 1000)
+            proc = await self._spawn(prompt, sid)
+            try:
+                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=self.timeout_s)
+            except asyncio.TimeoutError:
+                proc.kill()
+                await proc.wait()
+                return RunResult(text="", error=f"codewhale timeout {self.timeout_s}s")
+        except FileNotFoundError:
+            return RunResult(text="", error=f"`{CODEWHALE_BIN}` not found in PATH")
         except Exception as exc:
-            log.exception("[%s] deepseek request failed", self.name)
-            return None, f"request failed: {exc}", int((time.monotonic() - started) * 1000)
+            log.exception("[%s] codewhale subprocess crashed", self.name)
+            return RunResult(text="", error=f"spawn failed: {exc}")
 
-    def _parse(self, resp: httpx.Response, duration_ms: int) -> RunResult:
-        if resp.status_code != 200:
-            err = resp.text[:500]
-            log.error("[%s] deepseek HTTP %d: %s", self.name, resp.status_code, err)
-            return RunResult(text="", error=f"HTTP {resp.status_code}: {err}", duration_ms=duration_ms)
-        try:
-            data = resp.json()
-        except json.JSONDecodeError as exc:
-            return RunResult(text="", error=f"json parse: {exc}", duration_ms=duration_ms)
+        duration_ms = int((time.monotonic() - started) * 1000)
+        if proc.returncode != 0:
+            errtxt = (stderr or b"").decode("utf-8", errors="replace")[:2000]
+            # сессия протухла → один откат на новую
+            if sid and ("not found" in errtxt.lower() or "invalid" in errtxt.lower()
+                        or "no session" in errtxt.lower()):
+                log.warning("[%s] resume failed (stale sid), retry new session", self.name)
+                self._last_session_id = None
+                return await self._run_once(message, sid=None, isolated=isolated)
+            return RunResult(text="", error=f"codewhale exit {proc.returncode}: {errtxt}",
+                             duration_ms=duration_ms)
 
-        choices = data.get("choices", [])
-        if not choices:
-            return RunResult(text="", error="no choices", duration_ms=duration_ms)
+        raw = (stdout or b"").decode("utf-8", errors="replace")
+        parts: list[str] = []
+        meta: dict = {}
+        sid_capture: Optional[str] = None
+        err: Optional[str] = None
+        tools_used = 0
+        for line in raw.splitlines():
+            ev = self._parse_event(line)
+            if not ev:
+                continue
+            t = ev.get("type")
+            if t == "content":
+                parts.append(ev.get("content", ""))
+            elif t == "session_capture":
+                sid_capture = ev.get("content") or sid_capture
+            elif t == "metadata":
+                meta = ev.get("meta", {}) or {}
+            elif t == "tool":
+                tools_used += 1
+            elif t == "error":
+                err = ev.get("error") or "codewhale error"
+        if tools_used:
+            log.info("[%s] codewhale tools=%d", self.name, tools_used)
+        return self._finalize(parts, meta, sid_capture, err, duration_ms, isolated=isolated)
 
-        text = choices[0].get("message", {}).get("content", "")
-        u = data.get("usage", {})
-        usage = {"input": u.get("prompt_tokens", 0), "output": u.get("completion_tokens", 0),
-                 "total": u.get("total_tokens", 0), "cached": u.get("prompt_cache_hit_tokens", 0)}
-        cost = usage["input"] * COST_PER_M["input"] / 1e6 + usage["output"] * COST_PER_M["output"] / 1e6
-
-        return RunResult(text=text[:16000], usage=usage, cost_usd=cost, duration_ms=duration_ms)
-
+    # -------------------------------------------------------------- interface
     async def run(self, message: str, *, resume: bool = True, session_id: Optional[str] = None) -> RunResult:
-        # sanitize prompt
-        if message and message.lstrip().startswith("-"):
-            message = " " + message
-        if session_id is None:
-            self._history = []
+        sid = session_id or (self._last_session_id if resume else None)
+        return await self._run_once(message, sid=sid, isolated=False)
 
-        resp, error, ms = await self._call(self._build_messages(message))
-        if error:
-            return RunResult(text="", error=error, duration_ms=ms)
-
-        result = self._parse(resp, ms)
-        if not result.error:
-            self._history.append({"role": "user", "content": message})
-            self._history.append({"role": "assistant", "content": result.text})
-            self._trim_history()
-            self._save_history()
-            if not self._last_session_id:
-                self._last_session_id = f"ds-{self.name}-{int(time.time())}"
-            result.session_id = self._last_session_id
-        return result
-
+    async def run_isolated(self, message: str, *, session_id: Optional[str] = None) -> RunResult:
+        # cron/one-shot — без resume и без мутации session-state
+        return await self._run_once(message, sid=None, isolated=True)
 
     async def run_streaming(
         self,
@@ -190,126 +223,74 @@ class DeepSeekRunner(AgentRunner):
         resume: bool = True,
         session_id: Optional[str] = None,
     ) -> AsyncGenerator[StreamEvent, None]:
-        """SSE streaming: yield text deltas, then final result."""
-        if session_id is None:
-            self._history = []
-
-        messages = self._build_messages(message)
+        """Стрим текстовых дельт из stream-json, затем финальный RunResult."""
+        sid = session_id or (self._last_session_id if resume else None)
+        prompt = self._prepare_prompt(message, sid)
         started = time.monotonic()
-        accumulated = ""
-        usage = {}
+        parts: list[str] = []
+        meta: dict = {}
+        sid_capture: Optional[str] = None
+        err: Optional[str] = None
 
         try:
-            async with httpx.AsyncClient(timeout=self.timeout_s) as client:
-                async with client.stream(
-                    "POST",
-                    API_URL,
-                    headers={
-                        "Authorization": f"Bearer {self._get_api_key()}",
-                        "Content-Type": "application/json",
-                    },
-                    json={
-                        "model": self.model,
-                        "messages": messages,
-                        "max_tokens": 8192,
-                        "temperature": 0.7,
-                        "stream": True,
-                    },
-                ) as resp:
-                    if resp.status_code != 200:
-                        body = await resp.aread()
-                        err = body.decode(errors="replace")[:500]
-                        yield StreamEvent(
-                            kind="result",
-                            result=RunResult(text="", error=f"HTTP {resp.status_code}: {err}",
-                                             duration_ms=int((time.monotonic() - started) * 1000)),
-                        )
-                        return
-
-                    async for line in resp.aiter_lines():
-                        if not line.startswith("data: "):
-                            continue
-                        payload = line[6:]
-                        if payload.strip() == "[DONE]":
-                            break
-                        try:
-                            chunk = json.loads(payload)
-                        except json.JSONDecodeError:
-                            continue
-
-                        delta = chunk.get("choices", [{}])[0].get("delta", {})
-                        text_piece = delta.get("content", "")
-                        if text_piece:
-                            accumulated += text_piece
-                            yield StreamEvent(kind="text_delta", text=text_piece)
-
-                        if "usage" in chunk:
-                            u = chunk["usage"]
-                            usage = {
-                                "input": u.get("prompt_tokens", 0),
-                                "output": u.get("completion_tokens", 0),
-                                "total": u.get("total_tokens", 0),
-                                "cached": u.get("prompt_cache_hit_tokens", 0),
-                            }
-
-        except httpx.TimeoutException:
-            ms = int((time.monotonic() - started) * 1000)
-            yield StreamEvent(kind="result", result=RunResult(text=accumulated, error=f"timeout {self.timeout_s}s", duration_ms=ms))
+            proc = await self._spawn(prompt, sid)
+        except FileNotFoundError:
+            yield StreamEvent(kind="result", result=RunResult(text="", error=f"`{CODEWHALE_BIN}` not found"))
             return
         except Exception as exc:
-            log.exception("[%s] deepseek stream failed", self.name)
-            ms = int((time.monotonic() - started) * 1000)
-            yield StreamEvent(kind="result", result=RunResult(text=accumulated, error=f"stream error: {exc}", duration_ms=ms))
+            yield StreamEvent(kind="result", result=RunResult(text="", error=f"spawn failed: {exc}"))
             return
 
-        ms = int((time.monotonic() - started) * 1000)
-        text_final = accumulated[:16000]
-        cost = usage.get("input", 0) * COST_PER_M["input"] / 1e6 + usage.get("output", 0) * COST_PER_M["output"] / 1e6
-
-        if not accumulated.strip():
-            yield StreamEvent(kind="result", result=RunResult(text="", error="empty response", duration_ms=ms))
+        try:
+            while True:
+                try:
+                    line = await asyncio.wait_for(proc.stdout.readline(), timeout=self.timeout_s)
+                except asyncio.TimeoutError:
+                    proc.kill()
+                    await proc.wait()
+                    yield StreamEvent(kind="result", result=RunResult(
+                        text="".join(parts), error=f"codewhale timeout {self.timeout_s}s",
+                        duration_ms=int((time.monotonic() - started) * 1000)))
+                    return
+                if not line:
+                    break
+                ev = self._parse_event(line.decode("utf-8", errors="replace"))
+                if not ev:
+                    continue
+                t = ev.get("type")
+                if t == "content":
+                    piece = ev.get("content", "")
+                    if piece:
+                        parts.append(piece)
+                        yield StreamEvent(kind="text_delta", text=piece)
+                elif t == "session_capture":
+                    sid_capture = ev.get("content") or sid_capture
+                elif t == "metadata":
+                    meta = ev.get("meta", {}) or {}
+                elif t == "error":
+                    err = ev.get("error") or "codewhale error"
+            await proc.wait()
+        except Exception as exc:
+            log.exception("[%s] codewhale stream crashed", self.name)
+            yield StreamEvent(kind="result", result=RunResult(
+                text="".join(parts), error=f"stream error: {exc}",
+                duration_ms=int((time.monotonic() - started) * 1000)))
             return
 
-        self._history.append({"role": "user", "content": message})
-        self._history.append({"role": "assistant", "content": text_final})
-        self._trim_history()
-        self._save_history()
-        if not self._last_session_id:
-            self._last_session_id = f"ds-{self.name}-{int(time.time())}"
-
-        yield StreamEvent(
-            kind="result",
-            result=RunResult(
-                text=text_final,
-                usage=usage,
-                cost_usd=cost,
-                duration_ms=ms,
-                session_id=self._last_session_id,
-            ),
-        )
-
-    async def run_isolated(self, message: str, *, session_id: Optional[str] = None) -> RunResult:
-        msgs = []
-        if self._system_prompt:
-            msgs.append({"role": "system", "content": self._system_prompt})
-        msgs.append({"role": "user", "content": message})
-        resp, error, ms = await self._call(msgs)
-        if error:
-            return RunResult(text="", error=error, duration_ms=ms)
-        return self._parse(resp, ms)
+        duration_ms = int((time.monotonic() - started) * 1000)
+        result = self._finalize(parts, meta, sid_capture, err, duration_ms, isolated=False)
+        yield StreamEvent(kind="result", result=result)
 
     async def compact(self, *, session_id: Optional[str] = None) -> None:
-        if len(self._history) > 10:
-            self._history = self._history[-10:]
-            self._save_history()
+        # история живёт в сессии CodeWhale на стороне CLI — compact не требуется
+        pass
 
     async def reset(self) -> None:
-        self._history = []
         self._last_session_id = None
         try:
-            self._history_path.unlink(missing_ok=True)
+            self._sid_path.unlink(missing_ok=True)
         except Exception:
-            log.exception("[%s] failed to remove deepseek history on reset", self.name)
+            pass
 
     async def close(self) -> None:
-        self._history = []
+        pass
