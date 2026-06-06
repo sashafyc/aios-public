@@ -43,6 +43,34 @@ def aios_root() -> Path:
     return _default_root()
 
 
+def _bot_token_env_names() -> set[str]:
+    """Имена env-переменных с токенами TG-ботов — из `bot_token_env` всех
+    агентов в agents.toml. Нужны, чтобы вырезать их из env субпроцесса агента."""
+    toml_path = Path(__file__).resolve().parent / "agents.toml"
+    names: set[str] = set()
+    try:
+        raw = tomllib.loads(toml_path.read_text(encoding="utf-8"))
+        for _name, acfg in (raw.get("agents") or {}).items():
+            tev = acfg.get("bot_token_env")
+            if tev:
+                names.add(tev)
+    except Exception:
+        pass
+    return names
+
+
+def agent_subprocess_env() -> dict:
+    """Env для subprocess агента: копия окружения моста, но БЕЗ токенов
+    TG-ботов. Агент-субпроцесс не должен иметь возможности постить в TG сам —
+    доставкой занимается мост. Закрывает класс багов «агент отвечает сам себе»
+    (cron-агент curl-ит TG своим токеном или дёргает себя), оставляя
+    единственным путём доставки авто-пост моста."""
+    env = dict(os.environ)
+    for k in _bot_token_env_names():
+        env.pop(k, None)
+    return env
+
+
 def log_root() -> Path:
     return aios_root() / "logs"
 

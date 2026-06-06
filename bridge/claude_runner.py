@@ -28,6 +28,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import AsyncGenerator, Optional
 
+from path_config import agent_subprocess_env
+
 
 log = logging.getLogger("bridge.claude_runner")
 
@@ -180,6 +182,7 @@ class SubprocessRunner(AgentRunner):
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
                 cwd=str(self.workdir),
+                env=agent_subprocess_env(),  # без токенов TG-ботов: агент не постит сам
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 limit=10 * 1024 * 1024,
@@ -244,6 +247,7 @@ class SubprocessRunner(AgentRunner):
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
                 cwd=str(self.workdir),
+                env=agent_subprocess_env(),  # без токенов TG-ботов: агент не постит сам
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 limit=10 * 1024 * 1024,
@@ -438,6 +442,7 @@ class SubprocessRunner(AgentRunner):
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
                 cwd=str(self.workdir),
+                env=agent_subprocess_env(),  # без токенов TG-ботов: агент не постит сам
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 limit=10 * 1024 * 1024,

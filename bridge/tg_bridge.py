@@ -38,7 +38,7 @@ from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
 from typing import Optional
 
-BRIDGE_VERSION = "1.0.1"  # aios-public
+BRIDGE_VERSION = "1.0.2"  # aios-public
 
 sys.path.insert(0, str(Path(__file__).parent))
 
@@ -302,6 +302,9 @@ class Bridge:
         self._recent_agent_posts: dict[str, list[tuple[float, str]]] = {}
         # Когда у агента был последний isolated-прогон (для self-post guard в очереди).
         self._isolated_run_ts: dict[str, float] = {}
+        # Агенты с СЕЙЧАС идущим isolated-прогоном. Надёжный self-post guard,
+        # не зависящий от длительности прогона (прогон может идти часами).
+        self._isolated_active: set[str] = set()
 
     def register_bot(self, agent_name: str, bot) -> None:
         self._bots[agent_name] = bot
@@ -1198,19 +1201,48 @@ class Bridge:
 
             if parsed["clean_text"]:
                 text = parsed["clean_text"]
-                # strip meta-tail from isolated responses.
-                # Agents often append "Готово. Итог:/Вот что сделано:" summaries
-                # which get split into a separate TG message and look like
-                # the agent is responding to its own report.
-                _meta_tail_re = re.compile(
-                    r"\n{2,}(Готово\.?\s*(Итог|Вот что сделано|Что сделано|Результат)"
-                    r"[:\.].*)",
-                    re.IGNORECASE | re.DOTALL,
+                # Срез self-narration isolated-вывода. Промпт нередко навязывает
+                # агенту роль «отправителя в TG», и он оборачивает отчёт в рекап
+                # «Отправлено. Вот что ушло в TG (топик N): … <дубль отчёта>» либо
+                # ставит такую строку ПЕРЕД отчётом. Мост — единственный, кто
+                # постит, поэтому такой нарратив всегда лишний и выглядит как
+                # «агент отвечает сам себе». Чистим на уровне моста (head + tail),
+                # а не промптами каждого агента.
+
+                # head: ведущая строка «Отчёт отправлен в TG (topic …)» перед телом
+                _lead_narr_re = re.compile(
+                    r"^\s*(?:"
+                    r"(?:Отчёт|Отчет|Сообщение|Сводка|Дайджест|Пост[а-яё]*|Анонс)\s+отправлен[а-яё]*\s+в\s+(?:TG|топик|тред|thread|телеграм)"
+                    r"|Отправлено\s+в\s+(?:TG|топик|тред|thread)"
+                    r"|Опубликовано\s+в\s+топик"
+                    r")[^\n]*\n+",
+                    re.IGNORECASE,
                 )
-                _meta_match = _meta_tail_re.search(text)
-                if _meta_match:
-                    log.info("[%s] isolated: stripped meta-tail (%d chars)", agent_name, len(_meta_match.group(0)))
-                    text = text[:_meta_match.start()].rstrip()
+                _lead_m = _lead_narr_re.match(text)
+                if _lead_m and (len(text) - _lead_m.end()) > 50:
+                    log.info("[%s] isolated: stripped lead narration (%d chars)", agent_name, _lead_m.end())
+                    text = text[_lead_m.end():].lstrip()
+
+                # tail: рекап-маркер + продублированный отчёт после него
+                _echo_tail_re = re.compile(
+                    r"(?:\n+|^)\s*(?:"
+                    r"Отправлено[.!]?\s*Вот что"
+                    r"|Вот что ушло в\s*(?:TG|телеграм|топик)"
+                    r"|Отправлено в топик"
+                    r"|Сообщение отправлено в"
+                    r"|Сводка отправлена"
+                    r"|Отчёт(?:\s+\S+){0,4}\s+отправлен"
+                    r"|Скан завершён"
+                    r"|Готово[.!]?\s*(?:Итог|Результат|Вот что (?:сделал|сделано|нашёл|отправил))"
+                    r"|Вот что (?:сделал|сделано|нашёл|отправил|ушло)"
+                    r")",
+                    re.IGNORECASE,
+                )
+                _echo_match = _echo_tail_re.search(text)
+                if _echo_match and _echo_match.start() > 100:
+                    log.info("[%s] isolated: stripped self-echo tail (%d chars)",
+                             agent_name, len(text) - _echo_match.start())
+                    text = text[:_echo_match.start()].rstrip()
 
                 # Suppress full-housekeeping messages (summaries, context compression).
                 # ВАЖНО: глушим только КОРОТКИЕ служебные ответы. Реальные отчёты
@@ -1428,13 +1460,23 @@ class Bridge:
                             # чтобы self-post этого же агента, прилетевший в это окно,
                             # гарантированно дропнулся даже если он в том же tick.
                             self._isolated_run_ts[agent] = datetime.now(MSK).timestamp()
+                            # Помечаем активный прогон ДО запуска — снимется в
+                            # done-callback (и при успехе, и при исключении).
+                            self._isolated_active.add(agent)
                             # Fire-and-forget: не блокируем maintenance_loop
                             task = asyncio.create_task(
                                 self._run_agent_isolated(agent, text),
                                 name=f'isolated-{agent}-{fpath.stem}',
                             )
                             self._bg_tasks.add(task)
-                            task.add_done_callback(self._bg_tasks.discard)
+
+                            def _iso_done(t, _a=agent):
+                                self._bg_tasks.discard(t)
+                                self._isolated_active.discard(_a)
+                                # grace-окно self-post считаем от ЗАВЕРШЕНИЯ прогона
+                                self._isolated_run_ts[_a] = datetime.now(MSK).timestamp()
+
+                            task.add_done_callback(_iso_done)
                         else:
                             # Self-post guard: не-isolated user_message для агента,
                             # который прямо сейчас в окне своего isolated-прогона —
@@ -1442,8 +1484,10 @@ class Bridge:
                             # подаём его агенту как входящее (иначе ответит на свой
                             # же отчёт). Отчёт и так уходит в чат авто-постом.
                             _iso_ts = self._isolated_run_ts.get(agent, 0)
-                            if datetime.now(MSK).timestamp() - _iso_ts < ISOLATED_ECHO_WINDOW_S:
-                                log.warning("[%s] self-post в очереди во время isolated-прогона — дропнут (%d chars), реакция не запускается", agent, len(text))
+                            _iso_running = agent in self._isolated_active
+                            if _iso_running or (datetime.now(MSK).timestamp() - _iso_ts < ISOLATED_ECHO_WINDOW_S):
+                                log.warning("[%s] self-post в очереди (isolated %s) — дропнут (%d chars), реакция не запускается",
+                                            agent, "идёт" if _iso_running else "только что завершён", len(text))
                                 fpath.unlink(missing_ok=True)
                                 continue
                             cfg = agents_registry.get(agent)

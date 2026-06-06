@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Optional
 
 from claude_runner import AgentRunner, RunResult, SubprocessRunner
+from path_config import agent_subprocess_env
 import pricing as _pricing
 
 
@@ -81,6 +82,7 @@ class CodexSubprocessRunner(AgentRunner):
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
                 cwd=str(self.workdir),
+                env=agent_subprocess_env(),  # без токенов TG-ботов: агент не постит сам
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
@@ -183,6 +185,7 @@ class CodexSubprocessRunner(AgentRunner):
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
                 cwd=str(self.workdir),
+                env=agent_subprocess_env(),  # без токенов TG-ботов: агент не постит сам
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
