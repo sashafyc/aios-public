@@ -277,6 +277,19 @@ SELF_ECHO_TTL_S = int(os.getenv("SELF_ECHO_TTL_S", "900"))
 # в этом окне = его собственный self-post во время крона → дропаем (не реагируем).
 ISOLATED_ECHO_WINDOW_S = int(os.getenv("ISOLATED_ECHO_WINDOW_S", "300"))
 
+# Контракт доставки для cron/isolated-прогонов. Подмешивается мостом к КАЖДОМУ
+# изолированному запуску — структурно снимает у ВСЕХ агентов мотив отправлять
+# в TG самим (искать токены, дёргать Telegram API, запускать скрипты отправки).
+# Доставку финального ответа делает мост (_send_from). Сформулировано позитивно:
+# описывает, как работает доставка, а не список запретов.
+ISOLATED_DELIVERY_CONTRACT = (
+    "[СИСТЕМА — как доставляется твой ответ] Доставку берёт на себя мост: "
+    "что ты вернёшь обычным текстовым ответом на этот запрос, то мост и "
+    "опубликует в твой Telegram-топик. Твоя единственная задача здесь — "
+    "выполнить запрос и вернуть готовый результат текстом; на этом всё, "
+    "доставка уже обеспечена. Отправка в Telegram — целиком зона моста.\n\n"
+)
+
 
 class Bridge:
     def __init__(self):
@@ -1170,7 +1183,8 @@ class Bridge:
             self._isolated_run_ts[agent_name] = datetime.now(MSK).timestamp()
             log.info("[%s] ISOLATED run text=%r", agent_name, text[:120])
             try:
-                result: RunResult = await runner.run_isolated(text)
+                # Подмешиваем контракт доставки: агент не должен слать в TG сам.
+                result: RunResult = await runner.run_isolated(ISOLATED_DELIVERY_CONTRACT + text)
             except Exception as exc:
                 log.exception("[%s] isolated run failed", agent_name)
                 log_event("error", agent=agent_name, error=f"isolated: {exc}")
